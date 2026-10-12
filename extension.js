@@ -49,7 +49,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     }
 
     const Z = lib.xd_utils.zhuangzhou = {
-        revision: "2026-10-12-zz-v351-scaffold-switch",
+        revision: "2026-10-12-zz-v354-meng-needs-open-eye",
         v2proto: true,
         v2Sessions: new WeakMap(),
         v2ActiveSessions: new Set(),
@@ -3335,6 +3335,9 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             ? "xd_meng"
             : "xd_xing";
 
+        // 【梦】须至少有一只睁着的眼睛才能发动；双眼已闭时不出现【梦】按钮。
+        if (mode === "dream" && Z.state(player).closed >= 2) return false;
+
         return player.hasSkill(skill) &&
             (
                 !Z.state(player).lock ||
@@ -3835,30 +3838,31 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         if (!matching.length) {
             Z.useTrace(token, "没有同花色的" + (shown ? "明置" : "暗置") + "手牌可重铸");
             Z.fail(frame);
+            // 【梦】即使没有牌可重铸，仍闭上双眼；“否则”只带来下次仅能发动【醒】的限制。
+            if (frame.mode === "dream" && Z.alive(player)) Z.eyes(player, 2);
             return;
         }
 
         if (frame.mode === "awake") {
-            // 【醒】按最新规则：逐张尝试，不能重铸的牌留在原处；至少真正重铸一张才算完成。
-            // 不能仅凭调用了 recast 就算成功，部分技能会令重铸事件失效。
-            let succeeded = 0;
-            for (const card of matching) {
-                if (!Z.alive(player)) return;
-                if (!player.getCards("h").includes(card) || Z.shown(card, player) ||
-                    get.suit(card, player) !== token.fact.suit) continue;
-                if (typeof player.canRecast === "function" && !player.canRecast(card)) continue;
+            // 【醒】同时重铸所有符合条件的同花色暗置牌（一次原生重铸事件），不能重铸的牌留在原处；
+            // 至少真正重铸一张才算完成。不能仅凭调用了 recast 就算成功，部分技能会令重铸事件失效。
+            const eligible = matching.filter(card => {
+                if (typeof player.canRecast === "function" && !player.canRecast(card)) return false;
                 // 例如【黠慧】的黑牌不能弃置；在进入原生重铸前过滤，避免整批中断。
-                if (lib.filter.cardDiscardable && !lib.filter.cardDiscardable(card, player, "recast")) continue;
+                if (lib.filter.cardDiscardable && !lib.filter.cardDiscardable(card, player, "recast")) return false;
+                return true;
+            });
+            let succeeded = 0;
+            if (eligible.length) {
                 try {
-                    await player.recast(card);
+                    await player.recast(eligible);
                 } catch (error) {
-                    // 个别牌的原生重铸事件失败时继续处理其余候选；最后只按真实成功数结算。
-                    Z.useTrace(token, "单张重铸未完成，继续处理其余同花色暗置牌");
-                    try { console.warn("[庄周·醒] 单张重铸失败", error); } catch (e) {}
-                    continue;
+                    Z.useTrace(token, "整批重铸未完成");
+                    try { console.warn("[庄周·醒] 重铸失败", error); } catch (e) {}
                 }
                 // 只有实体材料真实离开手牌，才视作这张牌的重铸已经完成。
-                if (!player.getCards("h").includes(card)) succeeded++;
+                const hand = player.getCards("h");
+                succeeded = eligible.filter(card => !hand.includes(card)).length;
             }
             Z.useTrace(token, "【醒】真实成功重铸" + succeeded + "/" + matching.length + "张");
             if (!Z.alive(player)) return;
@@ -3873,13 +3877,8 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
 
         if (!Z.alive(player)) return;
         if (frame.mode === "dream") {
-            // 沿用 V2.7.11 的原有顺序：重铸失牌仍可能插入【寐】。
-            // 若已经双闭眼，则按技能“否则”限制下次仅【醒】；否则闭上双眼。
-            if (Z.state(player).closed === 2) {
-                Z.fail(frame);
-            } else {
-                Z.eyes(player, 2);
-            }
+            // 重铸后闭上双眼（重铸失牌仍可能先插入【寐】）。已双闭眼时保持不变，不触发“否则”。
+            if (Z.state(player).closed !== 2) Z.eyes(player, 2);
         }
     };
 
@@ -19400,7 +19399,7 @@ export default function () {
       "author": "玄蝶",
       "diskURL": "https://mega.nz/folder/qR8THbyS#arC5aKkgewdlV5_zXzeWew",
       "forumURL": "https://www.bilibili.com/opus/1107326926420181009",
-      "version": ZHUANGZHOU_TEST_SCAFFOLD ? "39/39-v351-test" : "39/39"
+      "version": ZHUANGZHOU_TEST_SCAFFOLD ? "39/39-v354-test" : "39/39"
     },
     files: {
       "character": [],
