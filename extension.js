@@ -1,14 +1,15 @@
 /*
  * 《风雨如晦（上）》
  *
- * 作者 / 游戏设计 / 主创：玄蝶
- * 开发制作 / 技术实现：Grace_Davis
- * AI 辅助开发 / 技术协助：ChatGPT
- * 代码贡献：清风（李牧、周公完整代码）
+ * 作者／主创：玄蝶
+ * 开发：ChatGPT、Claude
+ * 壁纸与界面美术：ChatGPT
+ * 测试、修复与操作体验打磨：Grace_Davis
+ * 代码贡献：清风（李牧、周公完整代码）、蝶设堂（桓温，经 ChatGPT 修改）、无名杀团队
+ *   荀淑、张芝、彭羕、孟达、孟获、吴苋、罗宪、张华、王衍基于无名杀本体代码，经 ChatGPT 按本作技能修改。
  *
- * 部分已有武将的基础实现参考或复用无名杀本体代码，
- * 并依据玄蝶当前发布版本的规则进行定点调整。
- * 扩展代码基于无名杀实现，相关代码遵循其适用的开源许可。
+ * 代码按其适用的开源许可使用；壁纸与界面美术不随代码授权，转载或二改请注明出处。
+ * 部分素材来自网络，版权归原作者所有，如有侵权请联系删除。
  */
 
 import { lib, game, ui, get, ai, _status } from "../../noname.js";
@@ -22,6 +23,23 @@ const silentRule = {
   charlotte: true,
   ...silentSkill
 };
+/*
+ * 庄周测试脚手架总开关（只改这一处，保存后重启游戏生效）：
+ *   true  = 开：出牌阶段自动闭眼、“测试：窥视手牌”按钮、“意象手动标记测试”横幅、
+ *           用牌链与“【庄周V2测试】”调试战报；闭眼违规只提示“TEST INVALID”，不判负离场。
+ *   false = 关：正式版行为，闭眼只由【寐】【梦】等真实技能进入，违规真的判负离场。
+ */
+const ZHUANGZHOU_TEST_SCAFFOLD = false;
+/*
+ * 庄周闭眼规则（只写在注释里：原作者要求游戏内文字极简，规则由玩家从“睁眼／闭眼”字句自行推断，如同线下闭眼打牌）。
+ * - 双眼闭上时，看不到自己的手牌、装备区、判定区与其他角色（含其是否阵亡）。
+ * - 只“听见”其他角色使用或打出的牌：只显示声明的牌名，不显示花色点数；转化牌只显示声明的牌名，不暴露是否转化。
+ *   改判只听见“X发动了【鬼才】”等，不知道用哪张牌改判。其他角色自己装备不被口述。
+ * - 被弃置、获得、展示、拼点等的牌一律不可见（牌背）。庄周弃置的牌背面朝上进入弃牌堆。
+ * - 弃置自己的牌：由庄周亲手摸选（可弃可不弃时可取消）；木牛流马是否移动也由庄周自己选。其他可选询问随机作答且必定执行。
+ * - 闭眼提交的用牌、打出、弃牌或木牛流马目标不符合规则：判负离场（测试模式下仅提示）。张数不对属公开信息，只要求重选。
+ * - 梦／醒结算未完成时，庄周其他武将技能失效。
+ */
 function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     "use strict";
 
@@ -31,7 +49,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     }
 
     const Z = lib.xd_utils.zhuangzhou = {
-        revision: "2026-09-19-v2.7.3-native-blind-test",
+        revision: "2026-10-12-zz-v351-scaffold-switch",
         v2proto: true,
         v2Sessions: new WeakMap(),
         v2ActiveSessions: new Set(),
@@ -270,7 +288,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
                 padding:8px 6px; border:1px solid #ffffffcc; background:#fffdf3d9; border-radius:22px;
                 box-shadow:0 8px 25px #39556514; text-align:center; }
             .zz-seat .zz-art { display:block; position:relative; width:100%; aspect-ratio:1; color:var(--teal); }
-            .zz-art svg { width:100%; height:100%; } .zz-art>img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; border-radius:14px; }
+            .zz-art svg { width:100%; height:100%; } .zz-art>img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; object-position:center center; border-radius:12px; }
             .zz-seat:nth-of-type(3n) { --wash:#e7dff0; --teal:#826a9c; }
             .zz-seat:nth-of-type(3n+1) { --wash:#f1e6ce; --teal:#aa813d; }
             .zz-seat-index { display:block; font-size:12px; letter-spacing:.12em; }
@@ -401,6 +419,2680 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         dock.append(Z.handRow, hint);
         Z.stage.appendChild(dock);
     };
+    // V2.7.15：梦境意象映射只改变本地显示，不改玩家对象、真实座次、判定与目标选择。
+    // 每次从非双闭眼进入双闭眼，重新随机分配；同一段闭眼内映射稳定。
+    // 这里只制作基础头像/名称遮蔽。原生战报、详情弹窗等其他信息入口留给后续专项处理。
+    Z.v215ImageryPool = [
+        { id: "fish", name: "乐鱼", glyph: "鱼", hue: "#5a98b4", art: "fish_lotus.webp" },
+        { id: "forget_fish_trap", name: "得鱼忘筌", glyph: "筌", hue: "#9c8457", art: "forget_fish_trap.webp" },
+        { id: "sea_turtle_well_frog", name: "东海之鳌拜访井底之蛙", glyph: "鳌", hue: "#6f998e", art: "sea_turtle_well_frog.webp" },
+        { id: "huizi", name: "惠子", glyph: "惠", hue: "#698b96", art: "huizi_formal.webp" },
+        { id: "huizi_garden", name: "惠子·论道", glyph: "惠", hue: "#698b96", art: "huizi_garden.webp", manualOnly: true },
+        { id: "kunpeng", name: "鲲鹏", glyph: "鹏", hue: "#5480b6", art: "kunpeng_portrait.webp" },
+        { id: "butterfly", name: "蝴蝶", glyph: "蝶", hue: "#957cb5", art: "hudie_liuguang.png" },
+        { id: "turtle", name: "神龟", glyph: "龟", hue: "#5b9a94", art: "zhuang_shengui.png" },
+        { id: "butcher", name: "庖丁", glyph: "丁", hue: "#8a869d", art: "paoding_funiu.png" },
+        { id: "oak", name: "栎社树", glyph: "树", hue: "#67957d", art: "lishe_jushu.png" },
+        { id: "mantis", name: "螳螂", glyph: "螳", hue: "#79a28d", art: "mantis_blocks_cart.png" },
+        { id: "mantis_cicada_oriole", name: "螳螂捕蝉，黄雀在后", glyph: "雀", hue: "#b79054", art: "mantis_cicada_oriole.png" },
+        { id: "liezi", name: "列子", glyph: "列", hue: "#7999aa", art: "liezi_yufeng.png" },
+        { id: "jieyu", name: "接舆", glyph: "舆", hue: "#a78b9b", art: "jieyu_autumn.webp" },
+        { id: "snail", name: "蜗牛", glyph: "蜗", hue: "#7f9e92", art: "snail_chuman_war.png" },
+        { id: "shadow", name: "罔两", glyph: "罔", hue: "#718f9c", art: "wangliang_wenjing.png" },
+        { id: "gourd", name: "大瓠", glyph: "瓠", hue: "#83a093", art: "zhuang_hui_dahu.png" },
+        { id: "yuanchu", name: "鹓鶵", glyph: "鹓", hue: "#d7b45f", art: "yuanchu_liquan.png" },
+        { id: "zhaosan", name: "朝三暮四", glyph: "狙", hue: "#a08a64", art: "zhaosan_musi.png" },
+        { id: "muji", name: "呆若木鸡", glyph: "鸡", hue: "#b07a5a", art: "muji_dairuo.png" },
+        { id: "handan", name: "邯郸学步", glyph: "步", hue: "#8d8f6a", art: "handan_xuebu.png" },
+        { id: "dongshi", name: "东施效颦", glyph: "颦", hue: "#b4849a", art: "dongshi_xiaopin.png" },
+        { id: "chenyu", name: "沉鱼落雁", glyph: "雁", hue: "#7fb0c4", art: "chenyu_luoyan.png" },
+        { id: "xuefu", name: "学富五车", glyph: "车", hue: "#b99a62", art: "xuefu_wuche.png" },
+        { id: "yibu", name: "亦步亦趋", glyph: "趋", hue: "#6f8a62", art: "yibu_yiqu.png" },
+        { id: "junzi", name: "君子之交淡如水", glyph: "淡", hue: "#9fb4b8", art: "junzi_danshui.png" },
+        { id: "xinjin", name: "薪尽火传", glyph: "薪", hue: "#c98a4a", art: "xinjin_huochuan.png" },
+        { id: "tugu", name: "吐故纳新", glyph: "纳", hue: "#d9a860", art: "tugu_naxin.png" },
+        { id: "qiegou", name: "窃钩者诛，窃国者侯", glyph: "钩", hue: "#8a6f5a", art: "qiegou_qieguo.png" },
+        { id: "tianlai", name: "天籁", glyph: "籁", hue: "#7fa3b8", art: "tianlai_tingtao.png" },
+        { id: "hongmeng", name: "鸿蒙", glyph: "鸿", hue: "#a69bb8", art: "hongmeng_yunjiang.png" },
+        { id: "zuowang", name: "坐忘", glyph: "忘", hue: "#8fa68a", art: "zuowang_yunhai.png" },
+        { id: "zhili", name: "支离", glyph: "离", hue: "#9a8f7c", art: "zhili_posui.png" },
+        { id: "xiangru", name: "相濡以沫", glyph: "沫", hue: "#6a9cad", art: "xiangru_ximo.png" },
+        { id: "wangyang", name: "望洋兴叹", glyph: "河", hue: "#5f8fae", art: "wangyang_xingtan.png" },
+        { id: "xiachong", name: "夏虫语冰", glyph: "冰", hue: "#8fb5c4", art: "xiachong_yubing.png" },
+        { id: "yuezu", name: "越俎代庖", glyph: "俎", hue: "#a8865c", art: "yuezu_daipao.png" },
+        { id: "tulong", name: "屠龙之技", glyph: "龙", hue: "#7a8a6e", art: "tulong_zhiji.png" },
+        { id: "tanli", name: "探骊得珠", glyph: "珠", hue: "#4f7f99", art: "tanli_dezhu.png" },
+        { id: "duanhe", name: "断鹤续凫", glyph: "鹤", hue: "#9aa6a0", art: "duanhe_xufu.png" },
+        { id: "yanshu", name: "偃鼠饮河", glyph: "鼠", hue: "#8a7a64", art: "yanshu_yinhe.png" },
+        { id: "baiju", name: "白驹过隙", glyph: "驹", hue: "#b9b2a0", art: "baiju_guoxi.png" },
+        { id: "zhuojin", name: "捉襟见肘", glyph: "襟", hue: "#94806a", art: "zhuojin_jianzhou.png" },
+        { id: "hezhe", name: "涸辙之鲋", glyph: "鲋", hue: "#9a8c6e", art: "hezhe_fuyu.png" },
+        // 经游戏内变化才能看到的卡画统一置底，避免一打开“换”便泄露后续故事。
+        { id: "fish_splash", name: "不乐鱼", glyph: "鱼", hue: "#5a98b4", art: "fish_splash.webp", manualOnly: true },
+        { id: "fish_bridge", name: "濠梁观鱼", glyph: "鱼", hue: "#5a98b4", art: "fish_bridge.webp", manualOnly: true },
+        { id: "yuanchu_spring", name: "梧桐醴泉", glyph: "泉", hue: "#d7b45f", art: "wutong_liquan.png", manualOnly: true },
+        // 仍可手动选到，且不进入随机初始角色形象池。
+        { id: "grilled_fish", name: "烤鱼", glyph: "烤", hue: "#ab725b", art: "grilled_fish.webp", manualOnly: true },
+        { id: "burnt_fish", name: "烤糊的鱼", glyph: "糊", hue: "#765549", art: "burnt_fish.webp", manualOnly: true },
+        { id: "huizi_cat", name: "惠子展示虎威", glyph: "猫", hue: "#698b96", art: "huizi_cat_formal.webp", manualOnly: true },
+        { id: "huizi_cat_close", name: "惠子·虎威", glyph: "猫", hue: "#698b96", art: "huizi_cat_garden.webp", manualOnly: true },
+        // 庄惠削灰组只由手动选择或无伤往来开启，不参与初始随机。
+        { id: "zh_cut_dust", name: "庄子削灰", glyph: "削", hue: "#c49b74", art: "zhuangzi_cut_dust.png", manualOnly: true },
+        { id: "hz_return_cut", name: "惠子扯平", glyph: "斧", hue: "#c49b74", art: "huizi_return_cut.png", manualOnly: true },
+        { id: "hz_two_axes", name: "惠子展示技术", glyph: "斧", hue: "#d7a45f", art: "huizi_two_axes.png", manualOnly: true },
+        { id: "zhuang_hui_boat", name: "庄惠瓠舟", glyph: "瓠", hue: "#8bbab0", art: "zhuang_hui_boat_portrait.webp", manualOnly: true },
+    ];
+    // 未标记 manualOnly 的条目参与普通随机；带 manualOnly 的变体仅用于手动改标。
+    // 新增场景形象保留独立条目，不改变鱼／惠子等已有变体的随机规则。
+    Z.v219RandomPool = Z.v215ImageryPool.filter(item => !item.manualOnly);
+    Z.v233OwnButterflyChoice = null;
+    Z.v233OwnButterflyNodes = new Set();
+    Z.v233OwnButterflyOriginal = new WeakMap();
+    // V2.7.38：只改下方五个数字就能调整入梦时庄周自己的卡画权重。
+    // 权重可以为 0（不抽中），也不必凑成 100，系统会自动按总和换算概率。
+    // 不要改左边的字段名；修改数字后，保存 extension.js 并重启游戏即可生效。
+    Z.v238OwnPortraitWeights = {
+        original: 50,                 // 保持庄周原武将图
+        zhuangzhou_mengdie: 20,       // 庄周梦蝶
+        diemeng_zhuangzhou: 20,       // 蝶梦庄周
+        dreaming_butterfly: 5,       // 能做梦的蝶
+        young_zhuangzhou_dreaming: 5 // 做梦的年轻庄周
+    };
+    Z.v238OwnPortraitPool = [
+        { art: "", weightKey: "original" },
+        { art: "zhuangzhou_mengdie.png", weightKey: "zhuangzhou_mengdie" },
+        { art: "diemeng_zhuangzhou.png", weightKey: "diemeng_zhuangzhou" },
+        { art: "dreaming_butterfly.png", weightKey: "dreaming_butterfly" },
+        { art: "young_zhuangzhou_dreaming.png", weightKey: "young_zhuangzhou_dreaming" },
+    ];
+    // 背景以主题组为单位抽签，与一组中有多少张壁纸无关。
+    // 这里同样只改数字即可调权重；写 0 表示这一组不参与普通随机。
+    Z.v241DreamWallpaperWeights = {
+        default_landscape: 1,
+        yuanchu_triptych: 1,
+        kunpeng_sequence: 1,
+        zhuang_hui_boat: 1,
+        diaoyu_pushui: 1,
+        mantis_cart: 1,
+        baiju_guoxi: 1,
+        lishe_shu: 1,
+    };
+    // 鲲鹏组播放顺序：只须调整下列文件名的位置；新增图片放入 assets/zhuangzhou/
+    // 并在下列数组增加一行即可。每抽中此组播放下一张，播放到末尾后从第一张循环。
+    Z.kunpengWallpaperOrder = [
+        "kunpeng_01_storm.webp",      // 借风暴出海
+        "kunpeng_02_sky.webp",        // 升空、俯瞰北冥南冥
+        "kunpeng_03_south_sea.webp",  // 抵达南冥
+        "kunpeng_04_overlook.webp",   // 鲲鹏视角俯瞰南冥
+        "kunpeng_05_dive.webp",       // 撞入海面
+        "kunpeng_06_underwater.webp", // 进入水下
+    ];
+    Z.v241DreamWallpaperPool = [
+        { id: "default_landscape", art: "", weightKey: "default_landscape" },
+        { id: "yuanchu_triptych", weightKey: "yuanchu_triptych" },
+        { id: "kunpeng_sequence", weightKey: "kunpeng_sequence" },
+        { id: "zhuang_hui_boat", art: "zhuang_hui_boat_wallpaper.webp", weightKey: "zhuang_hui_boat" },
+        { id: "diaoyu_pushui", name: "钓于濮水", art: "diaoyu_pushui.png", weightKey: "diaoyu_pushui" },
+        { id: "mantis_cart", name: "螳臂挡车", art: "mantis_cart_wallpaper.png", weightKey: "mantis_cart" },
+        { id: "baiju_guoxi", name: "白驹过隙", art: "baiju_guoxi_wallpaper.png", weightKey: "baiju_guoxi" },
+        { id: "lishe_shu", name: "栎社树", art: "lishe_shu_wallpaper.png", weightKey: "lishe_shu" },
+    ];
+    Z.v241DreamWallpaperState = {
+        current: null,
+        yuanchuPendingFinal: false,
+        yuanchuFinalUnlocked: false,
+        yuanchuPendingMoon: false,
+        yuanchuMoonUnlocked: false,
+        kunpengNext: 0,  // 本局下次抽中鲲鹏组时应播哪张（从零开始）
+    };
+    Z.v241DreamWallpaperSaved = new WeakMap();
+    Z.v241DreamWallpaperAppliedNodes = new Set();
+    // 只记住已真正绘制的背景；被主题重写时仍能在下一次同步中恢复。
+    Z.v241WallpaperRendered = new WeakMap();
+    Z.v241WallpaperActive = () => !!(Z.v2proto && Z.local(game.me) && Z.blind(game.me) && Z.alive(game.me) && !Z.ended);
+    Z.v241WallpaperTargetNodes = () => {
+        const nodes = [];
+        const push = node => {
+            if (!node || nodes.includes(node)) return;
+            nodes.push(node);
+        };
+        try { push(ui?.background); } catch (e) {}
+        try { push(document.querySelector?.("#background")); } catch (e) {}
+        try { push(document.querySelector?.(".background")); } catch (e) {}
+        return nodes.filter(Boolean);
+    };
+    Z.v241WallpaperArtForChoice = choice => {
+        if (!choice) return "";
+        if (choice.group === "yuanchu_triptych") {
+            if (choice.stage === "moon") return "yuanchu_bg_moon.png";
+            if (choice.stage === "final") return "yuanchu_bg_departed.png";
+            if (choice.stage === "standing") return "yuanchu_bg_standing.png";
+            return "yuanchu_bg_drinking.png";
+        }
+        if (choice.group === "kunpeng_sequence") return choice.art || "";
+        if (choice.group === "zhuang_hui_boat") return "zhuang_hui_boat_wallpaper.webp";
+        if (choice.group === "diaoyu_pushui") return "diaoyu_pushui.png";
+        if (choice.group === "mantis_cart") return "mantis_cart_wallpaper.png";
+        if (choice.group === "baiju_guoxi") return "baiju_guoxi_wallpaper.png";
+        if (choice.group === "lishe_shu") return "lishe_shu_wallpaper.png";
+        return "";
+    };
+    Z.v241ClearDreamWallpaper = () => {
+        for (const node of Array.from(Z.v241DreamWallpaperAppliedNodes)) {
+            const old = Z.v241DreamWallpaperSaved.get(node);
+            if (!old) continue;
+            node.style.backgroundImage = old.backgroundImage;
+            node.style.backgroundSize = old.backgroundSize;
+            node.style.backgroundPosition = old.backgroundPosition;
+            node.style.backgroundRepeat = old.backgroundRepeat;
+            node.style.backgroundColor = old.backgroundColor;
+            node.style.transition = old.transition;
+        }
+        Z.v241DreamWallpaperAppliedNodes.clear();
+        Z.v241WallpaperRendered = new WeakMap();
+    };
+    Z.v241DreamWallpaperRenderedMark = (node, url) => {
+        Z.v241WallpaperRendered.set(node, { url, css: node.style.backgroundImage });
+    };
+    Z.v241ApplyDreamWallpaper = choice => {
+        const art = Z.v241WallpaperArtForChoice(choice);
+        if (!art) {
+            Z.v241ClearDreamWallpaper();
+            return;
+        }
+        const url = Z.v219ArtUrl(art);
+        for (const node of Z.v241WallpaperTargetNodes()) {
+            const rendered = Z.v241WallpaperRendered.get(node);
+            if (rendered?.url === url && rendered.css === node.style.backgroundImage) continue;
+            if (!Z.v241DreamWallpaperSaved.has(node)) {
+                Z.v241DreamWallpaperSaved.set(node, {
+                    backgroundImage: node.style.backgroundImage || "",
+                    backgroundSize: node.style.backgroundSize || "",
+                    backgroundPosition: node.style.backgroundPosition || "",
+                    backgroundRepeat: node.style.backgroundRepeat || "",
+                    backgroundColor: node.style.backgroundColor || "",
+                    transition: node.style.transition || "",
+                });
+            }
+            const fade = "background-image .28s ease, background-position .28s ease";
+            node.style.transition = String(node.style.transition || "").includes(fade)
+                ? node.style.transition
+                : [node.style.transition, fade].filter(Boolean).join(", ");
+            node.style.backgroundImage = 'url("' + url + '")';
+            node.style.backgroundSize = 'cover';
+            node.style.backgroundPosition = 'center center';
+            node.style.backgroundRepeat = 'no-repeat';
+            node.style.backgroundColor = '#e7edf1';
+            Z.v241DreamWallpaperRenderedMark?.(node, url);
+            Z.v241DreamWallpaperAppliedNodes.add(node);
+        }
+    };
+    Z.v241ChooseDreamWallpaper = () => {
+        const state = Z.v241DreamWallpaperState;
+        if (state.yuanchuPendingMoon) {
+            state.yuanchuPendingMoon = false;
+            state.yuanchuMoonUnlocked = true;
+            return { group: "yuanchu_triptych", stage: "moon" };
+        }
+        if (state.yuanchuPendingFinal) {
+            state.yuanchuPendingFinal = false;
+            state.yuanchuFinalUnlocked = true;
+            state.yuanchuPendingMoon = true;
+            return { group: "yuanchu_triptych", stage: "final" };
+        }
+        // 鲲鹏组已开播但未播完：继续下一张，不重新抽签；播完后才回到随机。
+        if (state.kunpengNext > 0 && Z.kunpengWallpaperOrder.length) {
+            const order = Z.kunpengWallpaperOrder;
+            const index = state.kunpengNext % order.length;
+            state.kunpengNext = (index + 1) % order.length;
+            return { group: "kunpeng_sequence", stage: index, art: order[index] };
+        }
+        const weighted = Z.v241DreamWallpaperPool.map(item => {
+            const value = Number(Z.v241DreamWallpaperWeights[item.weightKey]);
+            return { item, weight: Number.isFinite(value) && value > 0 ? value : 0 };
+        }).filter(entry => entry.weight > 0);
+        const total = weighted.reduce((sum, entry) => sum + entry.weight, 0);
+        if (!(total > 0)) return { group: "default_landscape", stage: "base" };
+        let roll = Math.random() * total;
+        let chosen = weighted[weighted.length - 1].item;
+        for (const entry of weighted) {
+            if (roll < entry.weight) {
+                chosen = entry.item;
+                break;
+            }
+            roll -= entry.weight;
+        }
+        if (chosen.id === "yuanchu_triptych") {
+            return {
+                group: "yuanchu_triptych",
+                stage: state.yuanchuMoonUnlocked ? "moon" : "drinking",
+            };
+        }
+        if (chosen.id === "kunpeng_sequence" && Z.kunpengWallpaperOrder.length) {
+            const order = Z.kunpengWallpaperOrder;
+            const index = state.kunpengNext % order.length;
+            state.kunpengNext = (index + 1) % order.length;
+            return { group: "kunpeng_sequence", stage: index, art: order[index] };
+        }
+        if (chosen.id === "zhuang_hui_boat") {
+            return { group: "zhuang_hui_boat", stage: "base" };
+        }
+        if (chosen.id === "diaoyu_pushui") {
+            return { group: "diaoyu_pushui", stage: "base", art: "diaoyu_pushui.png" };
+        }
+        if (chosen.id === "mantis_cart") {
+            return { group: "mantis_cart", stage: "base", art: "mantis_cart_wallpaper.png" };
+        }
+        if (chosen.id === "baiju_guoxi") {
+            return { group: "baiju_guoxi", stage: "base", art: "baiju_guoxi_wallpaper.png" };
+        }
+        if (chosen.id === "lishe_shu") {
+            return { group: "lishe_shu", stage: "base", art: "lishe_shu_wallpaper.png" };
+        }
+        return { group: "default_landscape", stage: "base" };
+    };
+    Z.v241BeginDreamWallpaper = () => {
+        if (!Z.v241WallpaperActive()) {
+            Z.v241DreamWallpaperState.current = null;
+            Z.v241ClearDreamWallpaper();
+            return;
+        }
+        const choice = Z.v241ChooseDreamWallpaper();
+        Z.v241DreamWallpaperState.current = choice;
+        Z.v241ApplyDreamWallpaper(choice);
+    };
+    Z.v241SyncDreamWallpaper = () => {
+        if (!Z.v241WallpaperActive()) {
+            Z.v241ClearDreamWallpaper();
+            return;
+        }
+        const current = Z.v241DreamWallpaperState.current;
+        if (!current) {
+            Z.v241BeginDreamWallpaper();
+            return;
+        }
+        Z.v241ApplyDreamWallpaper(current);
+    };
+    Z.v241OnZhuangzhouUseOnOthers = () => {
+        const state = Z.v241DreamWallpaperState;
+        const current = state.current;
+        if (!current || current.group !== "yuanchu_triptych" || current.stage !== "drinking") return false;
+        current.stage = "standing";
+        state.yuanchuPendingFinal = true;
+        Z.v241ApplyDreamWallpaper(current);
+        return true;
+    };
+    Z.v241StopDreamWallpaper = () => {
+        Z.v241DreamWallpaperState.current = null;
+        Z.v241ClearDreamWallpaper();
+    };
+    // 只在控制台检查所选图片的路径，不额外泄露到梦中战报或弹出提示。
+    Z.v236CheckedButterflyArt = new Set();
+    Z.v236CheckButterflyAsset = art => {
+        if (!art || Z.v236CheckedButterflyArt.has(art) || typeof Image === "undefined") return;
+        Z.v236CheckedButterflyArt.add(art);
+        const probe = new Image();
+        probe.onerror = () => {
+            try { console.warn("[庄周梦蝶] 卡画加载失败，请检查 assets/zhuangzhou/" + art); } catch (e) {}
+        };
+        probe.src = Z.v219ArtUrl(art);
+    };
+    Z.v233ChooseOwnButterfly = () => {
+        // 只在新一段闭眼开始时调用一次；本段闭眼内选择不变。
+        const pool = Z.v238OwnPortraitPool.map(item => {
+            const number = Number(Z.v238OwnPortraitWeights[item.weightKey]);
+            return { art: item.art, weight: Number.isFinite(number) && number > 0 ? number : 0 };
+        });
+        const total = pool.reduce((sum, item) => sum + item.weight, 0);
+        if (!(total > 0)) return ""; // 五项全为零时，保留原画。
+        let roll = Math.random() * total;
+        let chosen = "";
+        for (const item of pool) {
+            if (!item.weight) continue;
+            if (roll < item.weight) {
+                chosen = item.art;
+                break;
+            }
+            roll -= item.weight;
+        }
+        try { console.debug("[庄周梦蝶] 本次闭眼卡画：", chosen || "原庄周卡画"); } catch (e) {}
+        Z.v236CheckButterflyAsset(chosen);
+        return chosen;
+    };
+    Z.v233EachOwnAvatarNode = callback => {
+        const nodes = [
+            game.me?.node?.avatar,
+            game.me?.node?.avatar2,
+            game.me?.querySelector?.(".avatar"),
+            game.me?.querySelector?.(".avatar2"),
+        ].filter(Boolean);
+        const seen = new Set();
+        for (const node of nodes) {
+            if (!node || seen.has(node)) continue;
+            seen.add(node);
+            callback(node);
+        }
+    };
+    Z.v233ApplyOwnButterfly = art => {
+        if (!art || typeof document === "undefined") return;
+        const url = Z.v219ArtUrl(art);
+        Z.v233EachOwnAvatarNode(node => {
+            const applied = node._xd_zz_butterflyRendered;
+            if (applied?.url === url && applied.css === node.style.backgroundImage &&
+                node.classList?.contains?.('xd-zz-v233-own-butterfly')) return;
+            if (!Z.v233OwnButterflyOriginal.has(node)) {
+                Z.v233OwnButterflyOriginal.set(node, {
+                    backgroundImage: node.style.backgroundImage || "",
+                    backgroundSize: node.style.backgroundSize || "",
+                    backgroundPosition: node.style.backgroundPosition || "",
+                    backgroundRepeat: node.style.backgroundRepeat || "",
+                });
+            }
+            node.style.backgroundImage = 'url("' + url + '")';
+            node.style.backgroundSize = 'cover';
+            node.style.backgroundPosition = 'center center';
+            node.style.backgroundRepeat = 'no-repeat';
+            node.classList?.add?.('xd-zz-v233-own-butterfly');
+            node._xd_zz_butterflyRendered = { url, css: node.style.backgroundImage };
+            Z.v233OwnButterflyNodes.add(node);
+        });
+    };
+    Z.v233RestoreOwnButterfly = () => {
+        for (const node of Array.from(Z.v233OwnButterflyNodes)) {
+            const old = Z.v233OwnButterflyOriginal.get(node);
+            if (old) {
+                node.style.backgroundImage = old.backgroundImage;
+                node.style.backgroundSize = old.backgroundSize;
+                node.style.backgroundPosition = old.backgroundPosition;
+                node.style.backgroundRepeat = old.backgroundRepeat;
+            }
+            node.classList?.remove?.('xd-zz-v233-own-butterfly');
+            delete node._xd_zz_butterflyRendered;
+        }
+        Z.v233OwnButterflyNodes.clear();
+        Z.v233OwnButterflyChoice = null;
+    };
+    Z.v233SyncOwnButterfly = () => {
+        const active = !!(Z.v2proto && Z.local(game.me) && Z.blind(game.me) && Z.alive(game.me) && !Z.ended);
+        if (!active) {
+            Z.v233RestoreOwnButterfly();
+            return;
+        }
+        if (Z.v233OwnButterflyChoice == null) Z.v233OwnButterflyChoice = Z.v233ChooseOwnButterfly();
+        if (!Z.v233OwnButterflyChoice) return;
+        Z.v233ApplyOwnButterfly(Z.v233OwnButterflyChoice);
+    };
+    Z.v219ArtUrl = art => art
+        ? ((typeof lib !== "undefined" && lib.assetURL) || "") +
+            "extension/风雨如晦（上）/assets/zhuangzhou/" + art
+        : "";
+    // 所有图片都仅参与本地表现层，加载失败则回退到原来的汉字意象。
+    Z.v219PlaySwapFx = frame => {
+        if (!frame?.classList) return;
+        frame.classList.remove("xd-zz-v219-switchfx");
+        try { void frame.offsetWidth; } catch (e) {}
+        frame.classList.add("xd-zz-v219-switchfx");
+        if (frame._xd_zz_fx_timer) clearTimeout(frame._xd_zz_fx_timer);
+        frame._xd_zz_fx_timer = setTimeout(() => {
+            try { frame.classList.remove("xd-zz-v219-switchfx"); } catch (e) {}
+        }, 560);
+    };
+    Z.v219SyncArt = (frame, img, image) => {
+        if (!img) return;
+        const art = image?.art || "";
+        if (img._xd_zz_art === art) return;
+        // V2.7.37: the menu's 20+ preview images must NOT all animate on open.
+        // Only changing an already-displayed battlefield veil earns V34's full
+        // blur + scale + light sweep. New battlefield veils get the entry-mist
+        // animation independently, exactly once when entering a dream.
+        const previouslyAssigned = img._xd_zz_art !== undefined;
+        const onBattlefield = !!frame?.classList?.contains("xd-zz-v215-veil");
+        const animateSwap = onBattlefield && previouslyAssigned;
+        img._xd_zz_art = art;
+        img.classList.remove("xd-zz-v219-swapping");
+        if (animateSwap) {
+            img.classList.add("xd-zz-v219-swapping");
+            Z.v219PlaySwapFx(frame);
+        }
+        if (!art) {
+            img.hidden = true;
+            img.removeAttribute?.("src");
+            img.classList.remove("xd-zz-v219-swapping");
+            frame.classList.remove("xd-zz-v219-has-art");
+            return;
+        }
+        img.hidden = false;
+        frame.classList.add("xd-zz-v219-has-art");
+        img.onload = () => {
+            if (img._xd_zz_art !== art) return;
+            img.classList.remove("xd-zz-v219-swapping");
+        };
+        img.onerror = () => {
+            if (img._xd_zz_art !== art) return;
+            img.hidden = true;
+            img.classList.remove("xd-zz-v219-swapping");
+            frame.classList.remove("xd-zz-v219-has-art");
+        };
+        img.src = Z.v219ArtUrl(art);
+    };
+    Z.v219MakeArt = (frame, image) => {
+        const img = document.createElement("img");
+        img.className = "xd-zz-v219-art";
+        img.alt = "";
+        img.setAttribute("aria-hidden", "true");
+        img.decoding = "async";
+        // Only the chooser's scrolled list uses lazy loading. Current-preview
+        // and battlefield images remain eager, with no additional animation.
+        if (frame?.classList?.contains("xd-zz-v216-choice-thumb")) img.loading = "lazy";
+        Z.v219SyncArt(frame, img, image);
+        return img;
+    };
+    Z.v215ImageryMap = new Map();
+    // 只属于本局庄周自己的观察笔记。随机意象每次重新抽取；手工标记跨闭眼保留。
+    Z.v215ManualImagery = new Map();
+    // 双图共用 grilled_fish 逻辑状态；只在变为烤鱼或手动改标时决定卡画。
+    Z.v287GrilledArts = new Map();
+    Z.v287GrilledVariants = [
+        { art: "grilled_fish.webp", choiceName: "烤鱼·一" },
+        { art: "grilled_fish_02.png", choiceName: "烤鱼·山寺盛宴" },
+    ];
+    Z.v287GrilledImage = (player, image, randomize = false, art) => {
+        if (image?.id !== "grilled_fish") return image;
+        if (randomize) {
+            art = Z.v287GrilledVariants[Math.floor(Math.random() * Z.v287GrilledVariants.length)].art;
+        } else {
+            art ||= Z.v287GrilledArts.get(player) || image.art;
+        }
+        if (!Z.v287GrilledVariants.some(variant => variant.art === art)) return image;
+        Z.v287GrilledArts.set(player, art);
+        return { ...image, art };
+    };
+    Z.v287ChoiceImages = () => Z.v215ImageryPool.flatMap(image =>
+        image.id === "grilled_fish"
+            ? Z.v287GrilledVariants.map(variant => ({ ...image, ...variant }))
+            : [image]
+    );
+    Z.v215Chooser = null;
+    Z.v215PreviousMap = new Map();
+    Z.v215Overlays = new Map();
+    Z.v215ImageryActive = false;
+    Z.v215Shuffle = values => {
+        const result = values.slice();
+        for (let i = result.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [result[i], result[j]] = [result[j], result[i]];
+        }
+        return result;
+    };
+    Z.v215CloseChooser = () => {
+        if (!Z.v215Chooser) return;
+        try { Z.v215Chooser.remove(); } catch (e) {}
+        Z.v215Chooser = null;
+    };
+
+    // V2.8.3：闭眼时原生头像的“双击查看武将详情”会直接泄露真实武将信息。
+    // 保留第一次点击的原生选目标行为；500ms 内第二次点击只打开梦中“角色形象”故事，
+    // 不再让 ui.click.avatar/avatar2 进入 charactercard()。死者的梦境外壳也使用同一规则。
+    Z.v283StoryHost = null;
+    Z.v283StoryKeyHandler = null;
+    Z.v283LastDreamTap = new WeakMap();
+    Z.v283DreamIntroGuard = null;
+    // V2.8.6：介绍正文只摘《庄子》原文，篇名和梦境改写说明另放在出处栏。
+    // 2026-10-12 逐字依中國哲學書電子化計劃（ctext.org）《莊子》原文，用字、標點皆從之；節錄處以「……」標出。
+    // 同源形象共用摘录；删节显式标出，绝不将梦境新增情节写成古籍原文。
+    const v286Excerpts = {
+        fish: {
+            chapter: "秋水",
+            text: "莊子與惠子遊於濠梁之上。莊子曰：「儵魚出遊從容，是魚樂也。」惠子曰：「子非魚，安知魚之樂？」莊子曰：「子非我，安知我不知魚之樂？」惠子曰：「我非子，固不知子矣；子固非魚也，子之不知魚之樂全矣。」莊子曰：「請循其本。子曰『汝安知魚樂』云者，既已知吾知之而問我，我知之濠上也。」"
+        },
+        trap: {
+            chapter: "外物",
+            text: "荃者所以在魚，得魚而忘荃。"
+        },
+        seaTurtle: {
+            chapter: "秋水",
+            text: "東海之鱉左足未入，而右膝已縶矣。於是逡巡而卻，告之海曰：『夫千里之遠，不足以舉其大；千仞之高，不足以極其深。禹之時，十年九潦，而水弗為加益；湯之時，八年七旱，而崖不為加損。夫不為頃久推移，不以多少進退者，此亦東海之大樂也。』於是埳井之鼃聞之，適適然驚，規規然自失也。"
+        },
+        huizi: {
+            chapter: "徐無鬼",
+            text: "莊子曰：「射者非前期而中，謂之善射，天下皆羿也，可乎？」惠子曰：「可。」莊子曰：「天下非有公是也，而各是其所是，天下皆堯也，可乎？」惠子曰：「可。」"
+        },
+        debate: {
+            chapter: "外物",
+            text: "惠子謂莊子曰：「子言無用。」莊子曰：「知無用而始可與言用矣。夫地非不廣且大也，人之所用容足耳。然則廁足而墊之，致黃泉，人尚有用乎？」惠子曰：「無用。」莊子曰：「然則無用之為用也亦明矣。」"
+        },
+        kunpeng: {
+            chapter: "逍遙遊",
+            text: "北冥有魚，其名為鯤。鯤之大，不知其幾千里也。化而為鳥，其名為鵬。鵬之背，不知其幾千里也；怒而飛，其翼若垂天之雲。是鳥也，海運則將徙於南冥。南冥者，天池也。齊諧者，志怪者也。諧之言曰：「鵬之徙於南冥也，水擊三千里，摶扶搖而上者九萬里，去以六月息者也。」"
+        },
+        butterfly: {
+            chapter: "齊物論",
+            text: "昔者莊周夢為胡蝶，栩栩然胡蝶也，自喻適志與！不知周也。俄然覺，則蘧蘧然周也。不知周之夢為胡蝶與，胡蝶之夢為周與？周與胡蝶，則必有分矣。此之謂物化。"
+        },
+        turtle: {
+            chapter: "秋水",
+            text: "莊子釣於濮水，楚王使大夫二人往先焉，曰：「願以境內累矣！」莊子持竿不顧，曰：「吾聞楚有神龜，死已三千歲矣，王巾笥而藏之廟堂之上。此龜者，寧其死為留骨而貴乎，寧其生而曳尾於塗中乎？」二大夫曰：「寧生而曳尾塗中。」莊子曰：「往矣！吾將曳尾於塗中。」"
+        },
+        butcher: {
+            chapter: "養生主",
+            text: "庖丁為文惠君解牛，手之所觸，肩之所倚，足之所履，膝之所踦，砉然嚮然，奏刀騞然，莫不中音。合於《桑林》之舞，乃中《經首》之會。文惠君曰：「譆！善哉！技蓋至此乎？」庖丁釋刀對曰：「臣之所好者道也，進乎技矣。始臣之解牛之時，所見无非牛者。三年之後，未嘗見全牛也。方今之時，臣以神遇，而不以目視，官知止而神欲行。依乎天理，批大郤，導大窾，因其固然。技經肯綮之未嘗，而況大軱乎！良庖歲更刀，割也；族庖月更刀，折也。今臣之刀十九年矣，所解數千牛矣，而刀刃若新發於硎。彼節者有間，而刀刃者无厚，以无厚入有間，恢恢乎其於遊刃必有餘地矣，是以十九年而刀刃若新發於硎。雖然，每至於族，吾見其難為，怵然為戒，視為止，行為遲。動刀甚微，謋然已解，如土委地。提刀而立，為之四顧，為之躊躇滿志，善刀而藏之。」文惠君曰：「善哉！吾聞庖丁之言，得養生焉。」"
+        },
+        oak: {
+            chapter: "人間世",
+            text: "匠石之齊，至乎曲轅，見櫟社樹。其大蔽數千牛，絜之百圍，其高臨山十仞而後有枝，其可以為舟者旁十數。觀者如市，匠伯不顧，遂行不輟。弟子厭觀之，走及匠石，曰：「自吾執斧斤以隨夫子，未嘗見材如此其美也。先生不肯視，行不輟，何邪？」曰：「已矣，勿言之矣！散木也，以為舟則沈，以為棺槨則速腐，以為器則速毀，以為門戶則液樠，以為柱則蠹。是不材之木也，無所可用，故能若是之壽。」"
+        },
+        mantis: {
+            chapter: "人間世",
+            text: "汝不知夫螳蜋乎？怒其臂以當車轍，不知其不勝任也，是其才之美者也。戒之慎之！積伐而美者以犯之，幾矣。"
+        },
+        mantisCicadaOriole: {
+            chapter: "山木",
+            text: "莊周遊乎雕陵之樊，睹一異鵲自南方來者，翼廣七尺，目大運寸，感周之顙而集於栗林。莊周曰：「此何鳥哉？翼殷不逝，目大不覩。」蹇裳躩步，執彈而留之。睹一蟬方得美蔭而忘其身；螳蜋執翳而搏之，見得而忘其形；異鵲從而利之，見利而忘其真。莊周怵然曰：「噫！物固相累，二類相召也。」捐彈而反走，虞人逐而誶之。"
+        },
+        quail: {
+            chapter: "逍遙遊",
+            text: "斥鴳笑之曰：「彼且奚適也？我騰躍而上，不過數仞而下，翱翔蓬蒿之間，此亦飛之至也。而彼且奚適也？」此小大之辯也。"
+        },
+        liezi: {
+            chapter: "逍遙遊",
+            text: "夫列子御風而行，泠然善也，旬有五日而後反。彼於致福者，未數數然也。此雖免乎行，猶有所待者也。"
+        },
+        jieyu: {
+            chapter: "人間世",
+            text: "孔子適楚，楚狂接輿遊其門曰：「鳳兮鳳兮，何如德之衰也！來世不可待，往世不可追也。天下有道，聖人成焉；天下無道，聖人生焉。方今之時，僅免刑焉。福輕乎羽，莫之知載；禍重乎地，莫之知避。已乎已乎，臨人以德！殆乎殆乎，畫地而趨！迷陽迷陽，無傷吾行！吾行卻曲，無傷吾足！」"
+        },
+        snail: {
+            chapter: "則陽",
+            text: "惠子聞之而見戴晉人。戴晉人曰：「有所謂蝸者，君知之乎？」曰：「然。」「有國於蝸之左角者曰觸氏，有國於蝸之右角者曰蠻氏，時相與爭地而戰，伏尸數萬，逐北旬有五日而後反。」"
+        },
+        shadow: {
+            chapter: "齊物論",
+            text: "罔兩問景曰：「曩子行，今子止，曩子坐，今子起，何其無特操與？」景曰：「吾有待而然者邪！吾所待又有待而然者邪！吾待蛇蚹、蜩翼邪！惡識所以然？惡識所以不然？」"
+        },
+        gourd: {
+            chapter: "逍遙遊",
+            text: "惠子謂莊子曰：「魏王貽我大瓠之種，我樹之成而實五石，以盛水漿，其堅不能自舉也。剖之以為瓢，則瓠落無所容。非不呺然大也，吾為其無用而掊之。」莊子曰：「夫子固拙於用大矣。\n……\n今子有五石之瓠，何不慮以為大樽而浮乎江湖，而憂其瓠落無所容？則夫子猶有蓬之心也夫！」"
+        },
+        yuanchu: {
+            chapter: "秋水",
+            text: "惠子相梁，莊子往見之。或謂惠子曰：「莊子來，欲代子相。」於是惠子恐，搜於國中三日三夜。莊子往見之，曰：「南方有鳥，其名為鵷鶵，子知之乎？夫鵷鶵發於南海而飛於北海，非梧桐不止，非練實不食，非醴泉不飲。於是鴟得腐鼠，鵷鶵過之，仰而視之曰：『嚇！』今子欲以子之梁國而嚇我邪？」"
+        },
+        spring: {
+            chapter: "秋水",
+            text: "夫鵷鶵發於南海而飛於北海，非梧桐不止，非練實不食，非醴泉不飲。"
+        },
+        zhaosan: {
+            chapter: "齊物論",
+            text: "勞神明為一，而不知其同也，謂之朝三。何謂朝三？曰狙公賦芧，曰：「朝三而莫四。」眾狙皆怒。曰：「然則朝四而莫三。」眾狙皆悅。名實未虧，而喜怒為用，亦因是也。"
+        },
+        muji: {
+            chapter: "達生",
+            text: "紀渻子為王養鬥雞。十日而問：「雞已乎？」曰：「未也。方虛憍而恃氣。」十日又問。曰：「未也。猶應嚮景。」十日又問。曰：「未也。猶疾視而盛氣。」十日又問。曰：「幾矣。雞雖有鳴者，已無變矣，望之似木雞矣，其德全矣，異雞無敢應者，反走矣。」"
+        },
+        handan: {
+            chapter: "秋水",
+            text: "且子獨不聞壽陵餘子之學行於邯鄲與？未得國能，又失其故行矣，直匍匐而歸耳。"
+        },
+        dongshi: {
+            chapter: "天運",
+            text: "故西施病心而矉其里，其里之醜人見而美之，歸亦捧心而矉其里。其里之富人見之，堅閉門而不出；貧人見之，挈妻子而去之走。彼知矉美而不知矉之所以美。"
+        },
+        xiangru: {
+            chapter: "大宗師",
+            text: "泉涸，魚相與處於陸，相呴以溼，相濡以沫，不如相忘於江湖。"
+        },
+        wangyang: {
+            chapter: "秋水",
+            text: "秋水時至，百川灌河，涇流之大，兩涘渚崖之間，不辯牛馬。於是焉河伯欣然自喜，以天下之美為盡在己。順流而東行，至於北海，東面而視，不見水端，於是焉河伯始旋其面目，望洋向若而歎，曰：「野語有之曰『聞道百，以為莫己若』者，我之謂也。」"
+        },
+        xiachong: {
+            chapter: "秋水",
+            text: "北海若曰：「井蛙不可以語於海者，拘於虛也；夏蟲不可以語於冰者，篤於時也；曲士不可以語於道者，束於教也。」"
+        },
+        yuezu: {
+            chapter: "逍遙遊",
+            text: "庖人雖不治庖，尸祝不越樽俎而代之矣。"
+        },
+        tulong: {
+            chapter: "列御寇",
+            text: "朱泙漫學屠龍於支離益，單千金之家，三年技成，而無所用其巧。"
+        },
+        tanli: {
+            chapter: "列御寇",
+            text: "河上有家貧恃緯蕭而食者，其子沒於淵，得千金之珠。其父謂其子曰「取石來鍛之！夫千金之珠，必在九重之淵而驪龍頷下，子能得珠者，必遭其睡也。使驪龍而寤，子尚奚微之有哉！」"
+        },
+        duanhe: {
+            chapter: "駢拇",
+            text: "長者不為有餘，短者不為不足。是故鳧脛雖短，續之則憂；鶴脛雖長，斷之則悲。故性長非所斷，性短非所續，無所去憂也。"
+        },
+        yanshu: {
+            chapter: "逍遙遊",
+            text: "鷦鷯巢於深林，不過一枝；偃鼠飲河，不過滿腹。歸休乎君！予無所用天下為。"
+        },
+        baiju: {
+            chapter: "知北遊",
+            text: "人生天地之間，若白駒之過郤，忽然而已。"
+        },
+        zhuojin: {
+            chapter: "讓王",
+            text: "曾子居衛，縕袍無表，顏色腫噲，手足胼胝。三日不舉火，十年不製衣，正冠而纓絕，捉衿而肘見，納履而踵決。曳縰而歌商頌，聲滿天地，若出金石。"
+        },
+        qiegou: {
+            chapter: "胠篋",
+            text: "彼竊鉤者誅，竊國者為諸侯，諸侯之門，而仁義存焉。"
+        },
+        tianlai: {
+            chapter: "齊物論",
+            text: "子綦曰：「夫吹萬不同，而使其自已也，咸其自取，怒者其誰邪！」"
+        },
+        hongmeng: {
+            chapter: "在宥",
+            text: "雲將東遊，過扶搖之枝，而適遭鴻蒙。鴻蒙方將拊髀雀躍而遊。"
+        },
+        zuowang: {
+            chapter: "大宗師",
+            text: "顏回曰：「墮肢體，黜聰明，離形去知，同於大通，此謂坐忘。」"
+        },
+        zhili: {
+            chapter: "人間世",
+            text: "支離疏者，頤隱於臍，肩高於頂，會撮指天，五管在上，兩髀為脅。"
+        },
+        tugu: {
+            chapter: "刻意",
+            text: "吹呴呼吸，吐故納新，熊經鳥申，為壽而已矣。"
+        },
+        xinjin: {
+            chapter: "養生主",
+            text: "指窮於為薪，火傳也，不知其盡也。"
+        },
+        junzi: {
+            chapter: "山木",
+            text: "君子之交淡若水，小人之交甘若醴；君子淡以親，小人甘以絕。彼無故以合者，則無故以離。"
+        },
+        yibu: {
+            chapter: "田子方",
+            text: "顏淵問於仲尼曰：「夫子步亦步，夫子趨亦趨，夫子馳亦馳，夫子奔逸絕塵，而回瞠若乎後矣。」"
+        },
+        xuefu: {
+            chapter: "天下",
+            text: "惠施多方，其書五車，其道舛駁，其言也不中。"
+        },
+        chenyu: {
+            chapter: "齊物論",
+            text: "毛嬙、麗姬，人之所美也，魚見之深入，鳥見之高飛，麋鹿見之決驟。四者孰知天下之正色哉？"
+        },
+        hezhe: {
+            chapter: "外物",
+            text: "莊周家貧，故往貸粟於監河侯。監河侯曰：「諾。我將得邑金，將貸子三百金，可乎？」莊周忿然作色曰：「周昨來，有中道而呼者。周顧視車轍中，有鮒魚焉。周問之曰：『鮒魚來！子何為者邪？』對曰：『我，東海之波臣也。君豈有斗升之水而活我哉？』周曰：『諾。我且南遊吳、越之王，激西江之水而迎子，可乎？』鮒魚忿然作色曰：『吾失我常與，我無所處。吾得斗升之水然活耳，君乃言此，曾不如早索我於枯魚之肆！』」"
+        },
+        cutDust: {
+            chapter: "徐無鬼",
+            text: "莊子送葬，過惠子之墓，顧謂從者曰：「郢人堊慢其鼻端若蠅翼，使匠石斲之。匠石運斤成風，聽而斲之，盡堊而鼻不傷，郢人立不失容。宋元君聞之，召匠石曰：『嘗試為寡人為之。』匠石曰：『臣則嘗能斲之。雖然，臣之質死久矣。』自夫子之死也，吾無以為質矣，吾無與言之矣。」"
+        }
+    };
+    Z.v286StoryOrigins = {
+        fish: v286Excerpts.fish,
+        forget_fish_trap: v286Excerpts.trap,
+        sea_turtle_well_frog: v286Excerpts.seaTurtle,
+        huizi: v286Excerpts.huizi,
+        huizi_garden: v286Excerpts.debate,
+        kunpeng: v286Excerpts.kunpeng,
+        butterfly: v286Excerpts.butterfly,
+        turtle: v286Excerpts.turtle,
+        butcher: { ...v286Excerpts.butcher, note: "梦境变体；原文为庖丁解牛。" },
+        oak: v286Excerpts.oak,
+        mantis: v286Excerpts.mantis,
+        mantis_cicada_oriole: v286Excerpts.mantisCicadaOriole,
+        quail: v286Excerpts.quail,
+        liezi: v286Excerpts.liezi,
+        jieyu: v286Excerpts.jieyu,
+        snail: v286Excerpts.snail,
+        shadow: v286Excerpts.shadow,
+        gourd: v286Excerpts.gourd,
+        yuanchu: v286Excerpts.yuanchu,
+        zhaosan: v286Excerpts.zhaosan,
+        muji: v286Excerpts.muji,
+        handan: v286Excerpts.handan,
+        dongshi: v286Excerpts.dongshi,
+        xiangru: v286Excerpts.xiangru,
+        wangyang: v286Excerpts.wangyang,
+        xiachong: v286Excerpts.xiachong,
+        yuezu: v286Excerpts.yuezu,
+        tulong: v286Excerpts.tulong,
+        tanli: v286Excerpts.tanli,
+        duanhe: v286Excerpts.duanhe,
+        yanshu: v286Excerpts.yanshu,
+        baiju: v286Excerpts.baiju,
+        zhuojin: v286Excerpts.zhuojin,
+        hezhe: v286Excerpts.hezhe,
+        chenyu: v286Excerpts.chenyu,
+        xuefu: v286Excerpts.xuefu,
+        yibu: v286Excerpts.yibu,
+        junzi: v286Excerpts.junzi,
+        xinjin: v286Excerpts.xinjin,
+        tugu: v286Excerpts.tugu,
+        qiegou: v286Excerpts.qiegou,
+        tianlai: v286Excerpts.tianlai,
+        hongmeng: v286Excerpts.hongmeng,
+        zuowang: v286Excerpts.zuowang,
+        zhili: v286Excerpts.zhili,
+        fish_splash: { ...v286Excerpts.fish, note: "梦境变体；原文为濠梁观鱼。" },
+        fish_bridge: v286Excerpts.fish,
+        yuanchu_spring: v286Excerpts.spring,
+        grilled_fish: { ...v286Excerpts.fish, note: "梦境变体；原文为濠梁观鱼，未写烤鱼。" },
+        burnt_fish: { ...v286Excerpts.fish, note: "梦境变体；原文为濠梁观鱼，未写烤鱼。" },
+        huizi_cat: { ...v286Excerpts.huizi, note: "梦境变体；原文为庄子与惠子的论辩。" },
+        huizi_cat_close: { ...v286Excerpts.debate, note: "梦境变体；原文为庄子与惠子的论辩。" },
+        zh_cut_dust: { ...v286Excerpts.cutDust, note: "梦境变体；原文挥斧者为匠石，受斲者为郢人。" },
+        hz_return_cut: { ...v286Excerpts.cutDust, note: "梦境变体；原文挥斧者为匠石，受斲者为郢人。" },
+        hz_two_axes: { ...v286Excerpts.cutDust, note: "梦境变体；原文挥斧者为匠石，未写双斧。" },
+        zhuang_hui_boat: { ...v286Excerpts.gourd, note: "梦境变体；原文提出浮乎江湖，未写庄惠同舟。" }
+    };
+    Z.v283StoryTexts = Object.fromEntries(
+        Object.entries(Z.v286StoryOrigins).map(([id, origin]) => [id, origin.text])
+    );
+    Z.v283CloseStory = () => {
+        if (Z.v283StoryKeyHandler && typeof document !== "undefined") {
+            try { document.removeEventListener("keydown", Z.v283StoryKeyHandler, true); } catch (e) {}
+        }
+        Z.v283StoryKeyHandler = null;
+        if (Z.v283StoryHost) {
+            try { Z.v283StoryHost.remove(); } catch (e) {}
+        }
+        Z.v283StoryHost = null;
+    };
+    Z.v283StoryText = image => Z.v283StoryTexts[image?.id] ||
+        "暂无对应的《庄子》原文摘录。";
+    Z.v283OpenStory = player => {
+        if (typeof document === "undefined" || !document.body || !Z.v215ImageryActive ||
+            !Z.local(game.me) || !Z.blind(game.me) || !player || player === game.me) return;
+        const image = Z.v215GetImagery?.(player) || Z.v215ImageryMap.get(player);
+        if (!image) return;
+        Z.v283CloseStory();
+        const host = document.createElement("div");
+        host.className = "xd-zz-v283-story-host";
+        host.tabIndex = -1;
+        const root = host.attachShadow ? host.attachShadow({ mode: "open" }) : host;
+        const style = document.createElement("style");
+        style.textContent = `
+            :host { all:initial!important; position:fixed!important; inset:0!important; z-index:2147483600!important;
+                display:block!important; pointer-events:auto!important; font:15px/1.65 Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif!important;
+                color:#243d4b!important; }
+            *,*::before,*::after { box-sizing:border-box!important; }
+            .backdrop { position:absolute!important; inset:0!important; display:flex!important; align-items:center!important; justify-content:center!important;
+                padding:24px!important; background:rgba(9,18,24,.52)!important; backdrop-filter:blur(2px)!important; }
+            .panel { --story-content-height:calc(min(78vh,760px) - 50px); position:relative!important; width:min(760px,92vw)!important;
+                max-height:min(78vh,760px)!important; overflow:auto!important;
+                display:grid!important; grid-template-columns:minmax(180px,270px) minmax(0,1fr)!important; align-items:start!important;
+                gap:22px!important; padding:24px!important;
+                border:1px solid rgba(124,157,171,.72)!important; border-radius:16px!important;
+                background:linear-gradient(145deg,rgba(245,249,247,.98),rgba(225,237,239,.98))!important;
+                box-shadow:0 20px 70px rgba(0,0,0,.38)!important; }
+            .panel,p { scrollbar-width:thin!important; scrollbar-color:rgba(95,130,145,.45) transparent!important; }
+            .panel::-webkit-scrollbar,p::-webkit-scrollbar { width:5px!important; }
+            .panel::-webkit-scrollbar-track,p::-webkit-scrollbar-track { background:transparent!important; }
+            .panel::-webkit-scrollbar-thumb,p::-webkit-scrollbar-thumb { background:rgba(95,130,145,.45)!important; border-radius:5px!important; }
+            .artbox { min-width:0!important; align-self:start!important; border-radius:12px!important; overflow:hidden!important; display:flex!important; align-items:center!important;
+                justify-content:center!important; background:linear-gradient(145deg,#dbe9ea,#bfd7dd)!important; border:1px solid rgba(92,133,151,.5)!important; }
+            .artbox img { width:100%!important; height:auto!important; max-height:calc(var(--story-content-height) - 2px)!important; object-fit:contain!important; display:block!important; }
+            .glyph { width:100%!important; min-height:min(210px,calc(var(--story-content-height) - 2px))!important; display:grid!important; place-items:center!important;
+                font:700 64px/1 "Noto Serif CJK SC","Songti SC","SimSun",serif!important; color:#355c6f!important; }
+            .copy { min-width:0!important; min-height:0!important; max-height:var(--story-content-height)!important;
+                display:flex!important; flex-direction:column!important; }
+            .eyebrow,h2,.note { flex:none!important; }
+            .eyebrow { margin:0 0 5px!important; font-size:12px!important; letter-spacing:.16em!important; color:#718995!important; }
+            h2 { margin:0 32px 12px 0!important; font:700 26px/1.25 "Noto Serif CJK SC","Songti SC","SimSun",serif!important; color:#25495a!important; }
+            p { margin:0!important; min-height:0!important; overflow-y:auto!important; overscroll-behavior:contain!important;
+                padding-right:6px!important;
+                white-space:pre-wrap!important; font-size:15px!important; color:#304b58!important; }
+            .note { margin-top:16px!important; padding-top:12px!important; border-top:1px solid rgba(95,130,145,.28)!important;
+                font-size:12px!important; color:#758b94!important; }
+            button { position:absolute!important; top:12px!important; right:12px!important; width:34px!important; height:34px!important; border:0!important;
+                border-radius:999px!important; background:rgba(65,91,103,.1)!important; color:#36515e!important; font:22px/34px Arial,sans-serif!important;
+                cursor:pointer!important; padding:0!important; }
+            button:hover { background:rgba(65,91,103,.18)!important; }
+            @media (max-width:620px) { .panel { --story-content-height:calc(min(78vh,760px) - 38px);
+                    grid-template-columns:1fr!important; gap:14px!important; padding:18px!important; }
+                .artbox { width:min(100%,250px)!important; justify-self:center!important; }
+                .copy { max-height:none!important; }
+                p { overflow:visible!important; padding-right:0!important; } }
+        `;
+        const backdrop = document.createElement("div");
+        backdrop.className = "backdrop";
+        const panel = document.createElement("div");
+        panel.className = "panel";
+        const artbox = document.createElement("div");
+        artbox.className = "artbox";
+        if (image.art) {
+            const img = document.createElement("img");
+            img.alt = "";
+            img.decoding = "async";
+            img.src = Z.v219ArtUrl(image.art);
+            img.onerror = () => {
+                img.remove();
+                const glyph = document.createElement("div");
+                glyph.className = "glyph";
+                glyph.textContent = image.glyph || "梦";
+                artbox.appendChild(glyph);
+            };
+            artbox.appendChild(img);
+        } else {
+            const glyph = document.createElement("div");
+            glyph.className = "glyph";
+            glyph.textContent = image.glyph || "梦";
+            artbox.appendChild(glyph);
+        }
+        const copy = document.createElement("div");
+        copy.className = "copy";
+        const eyebrow = document.createElement("div");
+        eyebrow.className = "eyebrow";
+        eyebrow.textContent = "梦中角色形象";
+        const title = document.createElement("h2");
+        title.textContent = image.name || "梦中形象";
+        const body = document.createElement("p");
+        body.textContent = Z.v283StoryText(image);
+        const note = document.createElement("div");
+        note.className = "note";
+        const origin = Z.v286StoryOrigins[image.id];
+        note.textContent = origin?.chapter || "";
+        note.hidden = !note.textContent;
+        note.style.whiteSpace = "pre-wrap";
+        copy.append(eyebrow, title, body, note);
+        const close = document.createElement("button");
+        close.type = "button";
+        close.setAttribute("aria-label", "关闭故事介绍");
+        close.textContent = "×";
+        close.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); Z.v283CloseStory(); });
+        panel.append(artbox, copy, close);
+        backdrop.appendChild(panel);
+        root.append(style, backdrop);
+        backdrop.addEventListener("click", e => {
+            if (e.target === backdrop) { e.preventDefault(); e.stopPropagation(); Z.v283CloseStory(); }
+        });
+        panel.addEventListener("click", e => e.stopPropagation());
+        Z.v283StoryKeyHandler = e => {
+            if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); Z.v283CloseStory(); }
+        };
+        document.addEventListener("keydown", Z.v283StoryKeyHandler, true);
+        document.body.appendChild(host);
+        Z.v283StoryHost = host;
+        try { host.focus({ preventScroll:true }); } catch (e) { try { host.focus(); } catch (e2) {} }
+    };
+    Z.v283InstallDreamIntroGuard = () => {
+        if (Z.v283DreamIntroGuard || typeof document === "undefined") return;
+        const eventName = lib.config.touchscreen ? "touchend" : "click";
+        const handler = event => {
+            if (!Z.v215ImageryActive || !Z.local(game.me) || !Z.blind(game.me) || Z.ended) return;
+            const target = event.target;
+            if (!target?.closest) return;
+            let player = null;
+            let tapNode = null;
+            const shell = target.closest(".xd-zz-v282-dead-shell");
+            if (shell?._xd_zz_player) {
+                player = shell._xd_zz_player;
+                tapNode = shell;
+            } else {
+                const avatar = target.closest(".avatar,.avatar2");
+                const masked = avatar?.closest?.(".player.xd-zz-v215-masked");
+                if (!avatar || !masked) return;
+                player = masked;
+                tapNode = avatar;
+            }
+            if (!player || player === game.me || !tapNode) return;
+            const now = Date.now();
+            const last = Z.v283LastDreamTap.get(tapNode) || 0;
+            if (now - last <= 500) {
+                Z.v283LastDreamTap.delete(tapNode);
+                try { tapNode._doubleClicking = false; } catch (e) {}
+                event.preventDefault?.();
+                event.stopPropagation?.();
+                event.stopImmediatePropagation?.();
+                Z.v283OpenStory(player);
+                return;
+            }
+            Z.v283LastDreamTap.set(tapNode, now);
+        };
+        document.addEventListener(eventName, handler, true);
+        Z.v283DreamIntroGuard = { eventName, handler };
+    };
+
+    // V2.8.2：死亡本身是现实状态，不应在庄周闭眼时通过阵亡章、翻面或上移泄露。
+    // 真正 player 仍照常死亡并进入 game.dead；这里只有一个本地、可点击的梦境外壳。
+    // 外壳保存该角色死亡前最后一个“角色形象”，点击时仍把真实 player 交还给选择系统。
+    Z.v282DeadDreamShells = new Map();
+    Z.v282DreamSeatSizes = new Map();
+    // 闭眼前保存主题实际使用的外框；阵亡外壳沿用它，不读取死亡后的灰化/阴影。
+    Z.v298ReadDreamFrame = player => {
+        if (!player || typeof getComputedStyle !== "function") return null;
+        try {
+            const style = getComputedStyle(player);
+            // v302：活人框的深色底（主题的 background-image 渐变/木纹）和外圈阴影都要一并带走，
+            // 否则阵亡外壳露出透明底，外圈明显变浅，一眼能看出已阵亡。
+            const frame = Object.fromEntries(Z.v302FrameProps.map(name => [name, style.getPropertyValue(name)]));
+            // 部分布局在 .player > .framebg 上画金/银/铜边框装饰；活人被遮挡时它仍可见，外壳同样复制一份。
+            const framebg = Array.from(player.children || []).find(node => node.classList?.contains("framebg"));
+            if (framebg) {
+                const box = getComputedStyle(framebg);
+                const outer = player.getBoundingClientRect(), inner = framebg.getBoundingClientRect();
+                if (box.display !== "none" && box.visibility !== "hidden" && outer.width > 0 && outer.height > 0 &&
+                    inner.width > 0 && inner.height > 0) {
+                    const pseudo = name => {
+                        const value = getComputedStyle(framebg, name);
+                        if (!value || value.content === "none" || value.display === "none") return null;
+                        return Object.fromEntries(Z.v302PseudoProps.map(prop => [prop, value.getPropertyValue(prop)]));
+                    };
+                    Object.defineProperty(frame, "__framebg", { enumerable: false, value: {
+                        left: (inner.left - outer.left) / outer.width, top: (inner.top - outer.top) / outer.height,
+                        width: inner.width / outer.width, height: inner.height / outer.height,
+                        style: Object.fromEntries(Z.v302FrameProps.concat(["opacity", "z-index"]).map(name => [name, box.getPropertyValue(name)])),
+                        before: pseudo("::before"), after: pseudo("::after"),
+                    } });
+                }
+            }
+            return frame;
+        } catch (e) { return null; }
+    };
+    Z.v302FrameProps = ["box-shadow", "border-radius", "background-color", "background-image", "background-size",
+        "background-position", "background-repeat", "background-origin", "background-clip",
+        "outline-style", "outline-width", "outline-color", "outline-offset",
+        "border-image-source", "border-image-slice", "border-image-width", "border-image-outset", "border-image-repeat"];
+    for (const side of ["top", "right", "bottom", "left"]) {
+        for (const part of ["width", "style", "color"]) Z.v302FrameProps.push("border-" + side + "-" + part);
+    }
+    Z.v302PseudoProps = Z.v302FrameProps.concat(["content", "position", "left", "top", "width", "height",
+        "transform", "opacity", "z-index", "display"]);
+    Z.v302PseudoSerial = 0;
+    Z.v302ApplyFramebg = (shell, frame) => {
+        const info = frame?.__framebg;
+        if (!info || typeof document === "undefined") return;
+        const layer = document.createElement("div");
+        layer.className = "xd-zz-v302-framebg";
+        const id = "zzfb" + (++Z.v302PseudoSerial);
+        layer.setAttribute("data-zz-framebg", id);
+        layer.style.setProperty("position", "absolute", "important");
+        layer.style.setProperty("left", info.left * 100 + "%", "important");
+        layer.style.setProperty("top", info.top * 100 + "%", "important");
+        layer.style.setProperty("width", info.width * 100 + "%", "important");
+        layer.style.setProperty("height", info.height * 100 + "%", "important");
+        layer.style.setProperty("pointer-events", "none", "important");
+        for (const [property, value] of Object.entries(info.style)) {
+            if (value && property !== "z-index") layer.style.setProperty(property, value, "important");
+        }
+        layer.style.setProperty("z-index", "1", "important");
+        const rules = [];
+        for (const [name, values] of [["::before", info.before], ["::after", info.after]]) {
+            if (!values) continue;
+            const body = Object.entries(values).filter(([, value]) => value)
+                .map(([property, value]) => property + ":" + value + "!important").join(";");
+            rules.push(`.xd-zz-v302-framebg[data-zz-framebg="${id}"]${name}{${body}}`);
+        }
+        if (rules.length) {
+            const style = document.createElement("style");
+            style.textContent = rules.join("\n");
+            layer.appendChild(style);
+        }
+        shell.insertBefore(layer, shell.firstChild);
+    };
+    Z.v298DreamBodySpace = () => {
+        // 本体 ui.updatez 会 scale(body)。body 下的 fixed 外壳必须使用缩放前的坐标。
+        const space = { left: 0, top: 0, x: 1, y: 1 };
+        if (typeof document === "undefined" || typeof getComputedStyle !== "function") return space;
+        const body = document.body;
+        try {
+            if (body && getComputedStyle(body).transform !== "none") {
+                const rect = body.getBoundingClientRect();
+                if (body.offsetWidth > 0 && body.offsetHeight > 0 && rect.width > 0 && rect.height > 0) {
+                    return { left: rect.left, top: rect.top, x: rect.width / body.offsetWidth, y: rect.height / body.offsetHeight };
+                }
+            }
+        } catch (e) {}
+        return space;
+    };
+    Z.v282SnapshotDreamSeatSizes = players => {
+        Z.v282DreamSeatSizes.clear();
+        const living = (game.players || []).find(current => current !== game.me && !(game.dead || []).includes(current));
+        const livingFrame = Z.v298ReadDreamFrame(living || game.me);
+        const bodySpace = Z.v298DreamBodySpace();
+        for (const current of players || []) {
+            try {
+                const rect = current?.getBoundingClientRect?.();
+                if (rect && rect.width > 0 && rect.height > 0) {
+                    const frame = (game.dead || []).includes(current)
+                        ? livingFrame : Z.v298ReadDreamFrame(current);
+                    const alreadyDead = (game.dead || []).includes(current);
+                    // 睁眼时已阵亡者的原生翻转不能影响新一轮梦境卡位的宽高。
+                    const width = alreadyDead && current.offsetWidth > 0 ? current.offsetWidth * bodySpace.x : rect.width;
+                    const height = alreadyDead && current.offsetHeight > 0 ? current.offsetHeight * bodySpace.y : rect.height;
+                    Z.v282DreamSeatSizes.set(current, { width, height, frame: frame || livingFrame });
+                }
+            } catch (e) {}
+        }
+    };
+    Z.v282DeadShellGeometry = player => {
+        let rect = null;
+        try { rect = player?.getBoundingClientRect?.() || null; } catch (e) {}
+        const saved = Z.v282DreamSeatSizes.get(player);
+        const width = saved?.width || (rect?.width > 0 ? rect.width : 104);
+        const height = saved?.height || (rect?.height > 0 ? rect.height : 140);
+        const seat = Z.seatLayout?.get?.(player);
+        const left = seat && typeof window !== "undefined"
+            ? seat.x * window.innerWidth - width / 2
+            : (rect?.left || 0);
+        const top = seat && typeof window !== "undefined"
+            ? seat.y * window.innerHeight - height / 2
+            : (rect?.top || 0);
+        const space = Z.v298DreamBodySpace();
+        return { left: (left - space.left) / space.x, top: (top - space.top) / space.y,
+            width: width / space.x, height: height / space.y };
+    };
+    Z.v282RemoveDeadDreamShell = player => {
+        const record = Z.v282DeadDreamShells.get(player);
+        if (record) {
+            try { record.shell?.remove(); } catch (e) {}
+            Z.v282DeadDreamShells.delete(player);
+        }
+        try { player?.classList?.remove?.("xd-zz-v282-dead-source-hidden"); } catch (e) {}
+    };
+    Z.v282ClearDeadDreamShells = () => {
+        for (const player of Array.from(Z.v282DeadDreamShells.keys())) Z.v282RemoveDeadDreamShell(player);
+        // 极端情况下外壳记录已丢失，也把本地隐藏标记撤掉。
+        for (const current of [...(game.players || []), ...(game.dead || [])]) {
+            try { current?.classList?.remove?.("xd-zz-v282-dead-source-hidden"); } catch (e) {}
+        }
+        Z.v282DreamSeatSizes.clear();
+    };
+    Z.v282ForwardDeadTarget = (player, event) => {
+        // 优先进入庄周自己的盲选代理；没有代理时再退回原生 target handler。
+        try {
+            for (const session of Z.v2ActiveSessions || []) {
+                if (!session || session.destroyed || session.suspended || get.event() !== session.event) continue;
+                if (typeof session.installed?.target === "function") {
+                    session.installed.target(player);
+                    return;
+                }
+            }
+        } catch (e) {}
+        try { ui?.click?.target?.call?.(player, event); } catch (e) {}
+    };
+    Z.v282EnsureDeadDreamShell = player => {
+        if (!player || player === game.me || typeof document === "undefined" || !document.body) return;
+        const image = Z.v215GetImagery(player);
+        if (!image) return;
+        const key = [image.id, image.name, image.glyph, image.hue, image.art || ""].join("\u0001");
+        let record = Z.v282DeadDreamShells.get(player);
+        if (!record?.shell?.isConnected) {
+            const shell = document.createElement("div");
+            shell.className = "xd-zz-v282-dead-shell";
+            shell._xd_zz_player = player;
+            shell.setAttribute("aria-label", "角色形象·" + image.name);
+
+            const veil = document.createElement("div");
+            veil.className = "xd-zz-v215-veil";
+            veil.style.setProperty("--zz-ink", image.hue);
+            veil.setAttribute("aria-label", "角色形象·" + image.name);
+            const art = Z.v219MakeArt(veil, image);
+            const glyph = document.createElement("span");
+            glyph.className = "xd-zz-v215-glyph";
+            glyph.textContent = image.glyph;
+            const name = document.createElement("span");
+            name.className = "xd-zz-v215-name";
+            name.textContent = image.name;
+            const edit = document.createElement("button");
+            edit.type = "button";
+            edit.className = "xd-zz-v216-edit";
+            edit.textContent = "换";
+            edit.setAttribute("aria-label", "更换角色形象");
+            // V2.8.5：死者外壳也保留“换”。按钮只操作庄周本地梦境笔记，
+            // 不复活、不移动真实死者，也不把点击继续传给目标选择。
+            for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend"]) {
+                edit.addEventListener(eventName, e => { e.stopPropagation(); });
+            }
+            edit.addEventListener("click", e => {
+                e.preventDefault();
+                e.stopPropagation();
+                Z.v216OpenChooser(player);
+            });
+            veil.append(art, glyph, name, edit);
+            shell.appendChild(veil);
+
+            const geometry = Z.v282DeadShellGeometry(player);
+            shell.style.setProperty("left", geometry.left + "px", "important");
+            shell.style.setProperty("top", geometry.top + "px", "important");
+            shell.style.setProperty("width", geometry.width + "px", "important");
+            shell.style.setProperty("height", geometry.height + "px", "important");
+            const savedFrame = Z.v282DreamSeatSizes.get(player)?.frame;
+            for (const [property, value] of Object.entries(savedFrame || {})) {
+                if (value) shell.style.setProperty(property, value, "important");
+            }
+            Z.v302ApplyFramebg(shell, savedFrame);
+
+            const eventName = lib.config.touchscreen ? "touchend" : "click";
+            shell.addEventListener(eventName, event => {
+                event.preventDefault?.();
+                event.stopPropagation?.();
+                Z.v282ForwardDeadTarget(player, event);
+            });
+            document.body.appendChild(shell);
+            record = { shell, veil, art, glyph, name, edit, key: "" };
+            Z.v282DeadDreamShells.set(player, record);
+        }
+        player.classList?.add?.("xd-zz-v282-dead-source-hidden");
+        if (record.key !== key) {
+            record.veil.style.setProperty("--zz-ink", image.hue);
+            record.glyph.textContent = image.glyph;
+            record.name.textContent = image.name;
+            record.shell.setAttribute("aria-label", "角色形象·" + image.name);
+            record.veil.setAttribute("aria-label", "角色形象·" + image.name);
+            record.edit?.setAttribute("aria-label", "更换“" + image.name + "”的角色形象");
+            Z.v219SyncArt(record.veil, record.art, image);
+            record.key = key;
+        }
+        const selected = !!player.classList?.contains?.("xd-zz-v2-proto-selected");
+        if (record.selected !== selected) {
+            record.shell.classList.toggle("xd-zz-v2-proto-selected", selected);
+            record.selected = selected;
+        }
+    };
+    Z.v282SyncDeadDreamShells = player => {
+        const dead = (game.dead || []).filter(current => current && current !== player);
+        const current = new Set(dead);
+        for (const shellPlayer of Array.from(Z.v282DeadDreamShells.keys())) {
+            if (!current.has(shellPlayer)) Z.v282RemoveDeadDreamShell(shellPlayer);
+        }
+        for (const deadPlayer of dead) Z.v282EnsureDeadDreamShell(deadPlayer);
+    };
+
+    Z.v215RemoveOverlays = () => {
+        Z.v215CloseChooser();
+        Z.v282ClearDeadDreamShells?.();
+        for (const [player, record] of Z.v215Overlays) {
+            try { record.node?.classList?.remove("xd-zz-v215-masked"); } catch (e) {}
+            try { record.overlay?.remove(); } catch (e) {}
+            try {
+                if (record.originalAriaLabel === null) record.node?.removeAttribute?.("aria-label");
+                else record.node?.setAttribute?.("aria-label", record.originalAriaLabel);
+            } catch (e) {}
+            if (record.node && "originalNoIntro" in record) {
+                if (record.originalNoIntro === undefined) delete record.node._nointro;
+                else record.node._nointro = record.originalNoIntro;
+            }
+        }
+        Z.v215Overlays.clear();
+    };
+    // V2.7.37: one-shot dream entry/exit stage lighting. No persistent
+    // particles, no extra gameplay state, and never intercept mouse targets.
+    Z.v237Curtain = null;
+    Z.v237Leaving = new Set();
+    Z.v237ClearCurtain = () => {
+        if (!Z.v237Curtain) return;
+        if (Z.v237Curtain._xd_zz_timer) clearTimeout(Z.v237Curtain._xd_zz_timer);
+        try { Z.v237Curtain.remove(); } catch (e) {}
+        Z.v237Curtain = null;
+    };
+    Z.v237ClearLeaving = () => {
+        for (const ghost of Z.v237Leaving) {
+            if (ghost._xd_zz_timer) clearTimeout(ghost._xd_zz_timer);
+            try { ghost.remove(); } catch (e) {}
+        }
+        Z.v237Leaving.clear();
+    };
+    Z.v237PlayCurtain = mode => {
+        if (typeof document === "undefined" || !document.body) return;
+        Z.v237ClearCurtain();
+        const curtain = document.createElement("div");
+        curtain.className = "xd-zz-v237-curtain xd-zz-v237-curtain-" + (mode === "exit" ? "exit" : "enter");
+        curtain.setAttribute("aria-hidden", "true");
+        document.body.appendChild(curtain);
+        Z.v237Curtain = curtain;
+        const finish = () => {
+            if (Z.v237Curtain !== curtain) return;
+            Z.v237ClearCurtain();
+        };
+        curtain.addEventListener("animationend", e => { if (e.target === curtain) finish(); }, { once:true });
+        curtain._xd_zz_timer = setTimeout(finish, 850);
+    };
+    Z.v237DepartPortraits = () => {
+        if (typeof document === "undefined" || !document.body) return;
+        Z.v237ClearLeaving();
+        // Snapshot ONLY the visible image surface just before original player
+        // DOM is unmasked. These inert ghosts dissolve over the real portraits.
+        for (const [player, record] of Z.v215Overlays) {
+            if (!record.overlay?.isConnected || !player?.getBoundingClientRect) continue;
+            const r = player.getBoundingClientRect();
+            if (!(r.width > 0 && r.height > 0)) continue;
+            const ghost = document.createElement("div");
+            ghost.className = "xd-zz-v215-masked xd-zz-v237-leavehost";
+            ghost.setAttribute("aria-hidden", "true");
+            ghost.style.setProperty("left", r.left + "px", "important");
+            ghost.style.setProperty("top", r.top + "px", "important");
+            ghost.style.setProperty("width", r.width + "px", "important");
+            ghost.style.setProperty("height", r.height + "px", "important");
+            const surface = record.overlay.cloneNode(true);
+            surface.classList.remove("xd-zz-v237-entering", "xd-zz-v219-switchfx");
+            surface.style.removeProperty("animation-delay");
+            surface.querySelector?.(".xd-zz-v216-edit")?.remove();
+            surface.querySelector?.(".xd-zz-v219-art")?.classList?.remove("xd-zz-v219-swapping");
+            ghost.appendChild(surface);
+            document.body.appendChild(ghost);
+            Z.v237Leaving.add(ghost);
+            const finish = () => {
+                if (ghost._xd_zz_timer) clearTimeout(ghost._xd_zz_timer);
+                try { ghost.remove(); } catch (e) {}
+                Z.v237Leaving.delete(ghost);
+            };
+            ghost.addEventListener("animationend", e => { if (e.target === ghost) finish(); }, { once:true });
+            ghost._xd_zz_timer = setTimeout(finish, 620);
+        }
+    };
+    Z.v215StopImagery = () => {
+        Z.v296SyncWuxieDialogs?.(true);
+        if (Z.v215ImageryActive && !Z.ended) {
+            Z.v237DepartPortraits?.();
+            Z.v237PlayCurtain?.("exit");
+        }
+        Z.v226StopDreamReport?.();
+        Z.v241StopDreamWallpaper?.();
+        Z.v283CloseStory?.();
+        if (Z.v215ImageryActive) Z.v215PreviousMap = new Map(Z.v215ImageryMap);
+        Z.v215ImageryActive = false;
+        Z.v215ImageryMap.clear();
+        Z.v239DuelStates.clear();
+        Z.v239HarmlessProgress.clear();
+        Z.v239CatForms.clear();
+        Z.v239CatLocked.clear();
+        Z.v239CandidateUses = new WeakMap();
+        Z.v239FinishedUses = new WeakSet();
+        Z.v215RemoveOverlays();
+        // 不清理手动标记；它们将在本局下一次闭眼时重新覆盖随机结果。
+    };
+    Z.v220PersistentForms = new Map();
+    Z.v220Lookup = id => Z.v215ImageryPool.find(item => item.id === id);
+    Z.v220CurrentId = player => Z.v215ImageryMap.get(player)?.id || Z.v215ManualImage(player)?.id || "";
+    Z.v220IsFishId = id => ["fish", "fish_bridge", "fish_splash", "grilled_fish", "burnt_fish"].includes(id);
+    Z.v220IsHuiziId = id => ["huizi", "huizi_garden", "huizi_cat", "huizi_cat_close"].includes(id);
+    Z.v220ApplyVisual = (player, id, options = {}) => {
+        const base = Z.v220Lookup(id);
+        if (!base || !player) return false;
+        const image = Z.v287GrilledImage(player, base, id === "grilled_fish");
+        if (options.persistent) Z.v220PersistentForms.set(player, id);
+        else if (options.clearPersistent) Z.v220PersistentForms.delete(player);
+        Z.v215ImageryMap.set(player, image);
+        Z.v216RefreshOverlayNames();
+        return true;
+    };
+    Z.v220GoodHuiziCard = (card, source, target) => {
+        const name = get.name(card, source) || card?.name;
+        if (["wuzhong", "taoyuan", "wugu", "tao", "jiu"].includes(name)) return true;
+        if (name === "tiesuo") return !!target?.isLinked?.();
+        return false;
+    };
+    // 战报使用事件发生时的意象快照，绝不从原生武将身份推断或补充隐藏资料。
+    Z.v220OnTargeted = (source, target, card) => {
+        if (!Z.v215ImageryActive || !Z.blind(game.me) || !target || target === game.me) return null;
+        const currentId = Z.v220CurrentId(target);
+        if (currentId === "fish") {
+            if (Z.v220ApplyVisual(target, "fish_bridge")) return { from: currentId, to: "fish_bridge" };
+            return null;
+        }
+        if (currentId === "yuanchu") {
+            if (Z.v220ApplyVisual(target, "yuanchu_spring")) return { from: currentId, to: "yuanchu_spring" };
+            return null;
+        }
+        if (Z.v220IsHuiziId(currentId) && source === game.me && !Z.v220GoodHuiziCard(card, source, target)) {
+            // 近景惠子对应近景虎威，论道惠子对应论道虎威；手动选的虎威不被覆盖。
+            const catId = currentId === "huizi_garden" ? "huizi_cat_close" :
+                currentId === "huizi" ? "huizi_cat" : null;
+            if (catId && Z.v220ApplyVisual(target, catId)) return { from: currentId, to: catId };
+        }
+        return null;
+    };
+    // 采用伤害事件的最终属性：藤甲等改写后的火焰伤害也算；一段伤害只推进一态。
+    Z.v226IsFireDamage = event => {
+        try { if (event?.hasNature?.("fire")) return true; } catch (e) {}
+        return Z.nature(event?.nature).split("|").includes("fire");
+    };
+    Z.v220OnDamaged = (target, event) => {
+        if (!Z.v215ImageryActive || !Z.blind(game.me) || !target || target === game.me || !(event?.num > 0)) return null;
+        const currentId = Z.v220CurrentId(target);
+        if (currentId === "gourd") {
+            if (Z.v220ApplyVisual(target, "zhuang_hui_boat")) return { from: currentId, to: "zhuang_hui_boat" };
+            return null;
+        }
+        if (!Z.v220IsFishId(currentId) || currentId === "burnt_fish") return null;
+        const fire = Z.v226IsFireDamage(event);
+        if (fire) {
+            const nextId = currentId === "grilled_fish" ? "burnt_fish" : "grilled_fish";
+            const manualBase = Z.v215ManualImagery.get(target);
+            // 只有手动固定的鱼／烤鱼跨闭眼保留烹饪结果；随机抽到的鱼下次重抽。
+            const persistent = ["fish", "grilled_fish"].includes(manualBase);
+            if (Z.v220ApplyVisual(target, nextId, { persistent })) return { from: currentId, to: nextId };
+            return null;
+        }
+        if (currentId !== "grilled_fish" && currentId !== "fish_splash" &&
+            Z.v220ApplyVisual(target, "fish_splash")) return { from: currentId, to: "fish_splash" };
+        return null;
+    };
+    // V2.7.39：庄惠削灰彩蛋独立于技能结算，只追踪本次闭眼的公开用牌与实际伤害。
+    // 玩家真实身份无关：只要梦中是惠子系（可以把勾践手动标为惠子），就能参与。
+    Z.v239DuelForms = new Set(["zh_cut_dust", "hz_return_cut", "hz_two_axes"]);
+    Z.v239DuelStates = new Map();             // 对方 player 对象 -> 当前来回阶段
+    // V2.7.44: 猫图优先。完成庄周→惠子→庄周的无伤往返后才开始削灰。
+    // 只统计双方依次用牌而且整张牌未造成伤害的事件；具体门槛可调整。
+    Z.v239NoDamageUsesRequired = 3;
+    Z.v239HarmlessProgress = new Map();       // 对方 player 对象 -> { count, lastDirection }
+    Z.v239CatForms = new Map();               // 保存本次闭眼中近景/论道的对应猫图
+    Z.v239CatLocked = new Set();              // 惠子确实受伤后，本次闭眼不再自动换成削灰图
+    Z.v239CandidateUses = new WeakMap();      // 同一次原生 useCard 事件 -> 候选双方
+    Z.v239FinishedUses = new WeakSet();       // 全局技能偶尔重复进入，同一张牌绝不重复计数
+    Z.v239GetUseEvent = event => {
+        let current = event;
+        for (let i = 0; current && i < 18; i++) {
+            if (current.name === "useCard") return current;
+            let next;
+            try { next = typeof current.getParent === "function" ? current.getParent() : current.parent; }
+            catch (e) { break; } // 监听彩蛋不能打断原生用牌链。
+            if (!next || next === current) break;
+            current = next;
+        }
+        return null;
+    };
+    Z.v239Eligible = other => {
+        if (!other || other === game.me || !Z.v215ImageryActive || !Z.blind(game.me)) return false;
+        const current = Z.v220CurrentId(other);
+        const manual = Z.v215ManualImagery.get(other);
+        return Z.v220IsHuiziId(current) || Z.v220IsHuiziId(manual) ||
+            Z.v239DuelForms.has(current) || Z.v239DuelForms.has(manual);
+    };
+    Z.v239RememberCatForm = other => {
+        const current = Z.v220CurrentId(other);
+        const manual = Z.v215ManualImagery.get(other);
+        if (current === "huizi_garden" || current === "huizi_cat_close" ||
+            manual === "huizi_garden" || manual === "huizi_cat_close") {
+            Z.v239CatForms.set(other, "huizi_cat_close");
+        } else if (current === "huizi" || current === "huizi_cat") {
+            Z.v239CatForms.set(other, "huizi_cat");
+        } else if (!Z.v239CatForms.has(other)) {
+            // 手工选择的削灰图，没有原始近景/论道信息时，使用普通猫图。
+            Z.v239CatForms.set(other, "huizi_cat");
+        }
+    };
+    Z.v239ResetToCat = (other, lock = false) => {
+        if (!Z.v239Eligible(other)) return null;
+        const from = Z.v220CurrentId(other);
+        // 两张原始惠子图仅由庄周用坏牌指定目标时换成虎威；受伤或交锋失败不能跳过此入口。
+        if (from === "huizi" || from === "huizi_garden") return null;
+        Z.v239RememberCatForm(other);
+        if (lock) Z.v239CatLocked.add(other);
+        Z.v239DuelStates.delete(other);
+        Z.v239HarmlessProgress.delete(other);
+        const nextId = Z.v239CatForms.get(other) || "huizi_cat";
+        if (from === nextId || !Z.v220ApplyVisual(other, nextId)) return null;
+        return { from, to: nextId };
+    };
+    Z.v239RegisterTarget = (useEvent, source, target) => {
+        if (!useEvent || !source || !target || source === target || !Z.v215ImageryActive || !Z.blind(game.me)) return;
+        let other = null;
+        let direction = null;
+        if (source === game.me && Z.v239Eligible(target)) {
+            other = target; direction = "zhuangzhou";
+        } else if (target === game.me && Z.v239Eligible(source)) {
+            other = source; direction = "counterpart";
+        }
+        if (!other) return;
+        Z.v239RememberCatForm(other);
+        let candidates = Z.v239CandidateUses.get(useEvent);
+        if (!candidates) {
+            candidates = new Map();
+            Z.v239CandidateUses.set(useEvent, candidates);
+        }
+        if (!candidates.has(other)) candidates.set(other, { direction, damaged: false });
+    };
+    Z.v239BeginUse = useEvent => {
+        if (!useEvent || !Array.isArray(useEvent.targets)) return;
+        for (const target of useEvent.targets) Z.v239RegisterTarget(useEvent, useEvent.player, target);
+    };
+    Z.v239RegisterDamage = damage => {
+        if (!(damage?.num > 0)) return;
+        // 只认发生在本次牌结算之下的真正伤害，不能以 card 名称/回合/时间推断。
+        const useEvent = Z.v239GetUseEvent(damage);
+        if (!useEvent) return;
+        const candidates = Z.v239CandidateUses.get(useEvent);
+        if (!candidates) return;
+        // 这一张牌若造成任何实际伤害，就不属于“削灰而不伤”的过招。
+        for (const candidate of candidates.values()) candidate.damaged = true;
+    };
+    Z.v239NextStep = (state, direction) => {
+        if (!state) return direction === "zhuangzhou" ? 1 : 0;
+        if (state.step === 1 && direction === "counterpart") return 2;
+        if (state.step === 2 && direction === "zhuangzhou") return 3;
+        if (state.step === 3 && direction === "counterpart") return 4;
+        // 此后让庄子再来一斧，惠子用双斧继续回敬。
+        if (state.step === 4 && direction === "zhuangzhou") return 3;
+        return state.step;
+    };
+    Z.v239StepArt = step => step === 1 || step === 3 ? "zh_cut_dust" :
+        step === 2 ? "hz_return_cut" : step === 4 ? "hz_two_axes" : "";
+    Z.v239FinalizeUse = useEvent => {
+        if (!useEvent || !Z.v215ImageryActive || !Z.blind(game.me) || Z.v239FinishedUses.has(useEvent)) return;
+        Z.v239FinishedUses.add(useEvent);
+        Z.v239BeginUse(useEvent); // 原生最终目标集可能比 useCard1 多（例如追加目标）。
+        const candidates = Z.v239CandidateUses.get(useEvent);
+        if (!candidates) return;
+        for (const [other, candidate] of candidates) {
+            if (!Z.v239Eligible(other)) continue;
+            if (Z.v239CatLocked.has(other)) continue;
+            if (candidate.damaged) {
+                // 任一方此次用牌造成伤害，都中断无伤交锋；若惠子受伤，
+                // damageEnd 已将他锁定为猫图，这里不重复换图。
+                Z.v226RecordTransformation(other, Z.v239ResetToCat(other));
+                continue;
+            }
+            let state = Z.v239DuelStates.get(other);
+            if (!state) {
+                // 玩家主动改标到削灰图后，沿用原来从所选阶段继续的行为。
+                const form = Z.v220CurrentId(other);
+                const step = form === "zh_cut_dust" ? 1 : form === "hz_return_cut" ? 2 :
+                    form === "hz_two_axes" ? 4 : 0;
+                state = step ? { step } : null;
+            }
+            if (!state) {
+                // 未显示过猫图时，不因为无伤用牌提前触发削灰。
+                const form = Z.v220CurrentId(other);
+                if (form !== "huizi_cat" && form !== "huizi_cat_close") continue;
+                const progress = Z.v239HarmlessProgress.get(other) || { count: 0, lastDirection: "" };
+                if (!progress.count) {
+                    if (candidate.direction !== "zhuangzhou") continue;
+                    progress.count = 1;
+                    progress.lastDirection = candidate.direction;
+                } else if (progress.lastDirection !== candidate.direction) {
+                    progress.count++;
+                    progress.lastDirection = candidate.direction;
+                }
+                Z.v239HarmlessProgress.set(other, progress);
+                if (progress.count < Math.max(3, Z.v239NoDamageUsesRequired)) continue;
+                // 只在庄周再次无伤用牌时开启第一张削灰图，避免首张猫图被同一事件挤掉。
+                if (candidate.direction !== "zhuangzhou") continue;
+                Z.v239HarmlessProgress.delete(other);
+            }
+            const step = Z.v239NextStep(state, candidate.direction);
+            if (!step || step === state?.step) continue;
+            Z.v239DuelStates.set(other, { step });
+            const imageId = Z.v239StepArt(step);
+            const from = Z.v220CurrentId(other);
+            if (imageId && from !== imageId && Z.v220ApplyVisual(other, imageId)) {
+                Z.v226RecordTransformation(other, { from, to: imageId });
+            }
+        }
+    };
+    // 已进入虎威／削灰后仍遵守受伤时猫图优先；两张原始惠子图不由伤害触发变化。
+    Z.v239OnHuiziDamaged = target => {
+        if (!Z.v239Eligible(target)) return null;
+        return Z.v239ResetToCat(target, true);
+    };
+    Z.v215ManualImage = player => {
+        const baseId = Z.v215ManualImagery.get(player);
+        let id = baseId;
+        if (["fish", "grilled_fish"].includes(baseId) &&
+            ["grilled_fish", "burnt_fish"].includes(Z.v220PersistentForms.get(player))) {
+            id = Z.v220PersistentForms.get(player);
+        }
+        return Z.v287GrilledImage(player, Z.v215ImageryPool.find(item => item.id === id));
+    };
+    // V2.7.26：梦境新闻流只存在本次闭眼，原生 game.log 仍完整执行，睁眼恢复原生战报。
+    // 不向梦报输出牌点数、花色、剩余体力、真实武将名或任何未公开身份信息。
+    // V2.7.31: xd_zhuangzhou_engine can see the very same global damageEnd from more than
+    // one global-skill invocation. Identity dedup only: never merge two actual damage events.
+    Z.v230SeenDamageEvents = new WeakSet();
+    Z.v226DreamReportActive = false;
+    Z.v226DreamLines = [];
+    Z.v226DreamHost = null;
+    Z.v226DreamList = null;
+    Z.v226SeenUses = new WeakSet();
+    Z.v226PlayerName = player => {
+        if (player === game.me) return "庄周";
+        return Z.v215ImageryMap.get(player)?.name || Z.v215ManualImage?.(player)?.name || "梦中人";
+    };
+    Z.v226ImageryName = id => Z.v220Lookup(id)?.name || "梦中人";
+    Z.v226Escape = text => String(text == null ? "" : text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    Z.v226NameHTML = name => '<span class="xd-zz-v226-name">' + Z.v226Escape(name) + '</span>';
+    Z.v226PlayerHTML = player => Z.v226NameHTML(Z.v226PlayerName(player));
+    Z.v226ImageryHTML = id => Z.v226NameHTML(Z.v226ImageryName(id));
+    // V2.7.36：梦报最新消息置顶，其余正文和人物名称着色规则不变。
+    Z.v226AddDreamLine = (message, html) => {
+        if (!Z.v226DreamReportActive || !Z.blind(game.me) || !message) return;
+        const payload = { text: String(message), html: html ? String(html) : "" };
+        Z.v226DreamLines.unshift(payload);
+        // 本次闭眼的新闻完整保留；旧消息只在睁眼时清空，过多时由列表独立滚动。
+        if (!Z.v226DreamList) return;
+        const line = document.createElement("div");
+        line.className = "xd-zz-v226-line xd-zz-v237-ink-arrive";
+        if (payload.html) line.innerHTML = payload.html;
+        else line.textContent = payload.text;
+        // 和本体战报一致：最新消息永远占第一行，旧消息向下推。
+        Z.v226DreamList.prepend(line);
+        // 展开或收起都不丢失旧消息，最新消息保持置顶。
+        Z.v226DreamList.scrollTop = 0;
+    };
+    Z.v226EnsureReportCSS = () => {
+        if (document.getElementById("xd-zz-v226-report-css")) return;
+        const style = document.createElement("style");
+        style.id = "xd-zz-v226-report-css";
+        style.textContent = `
+            /* 只隐藏本地可见的原生战报与战报历史入口；原生游戏事件和日志照常记录。 */
+            .xd-zz-v226-blind #log,
+            .xd-zz-v226-blind #arenalog,
+            .xd-zz-v226-blind #sidebar3,
+            .xd-zz-v226-blind #historybar,
+            .xd-zz-v226-blind .historybar,
+            .xd-zz-v226-native-hidden {visibility:hidden!important;pointer-events:none!important;}
+            /* V2.8.2：保留文字类技能宣告（normal-font），仅遮掉伤害/回复数字浮层。 */
+            .xd-zz-v226-blind .player .damage:not(.normal-font) {
+                visibility:hidden!important;pointer-events:none!important;
+            }
+            /* 判定牌属于闭眼不可知的视觉信息：整张展示牌隐藏，但真实判定事件与牌对象不动。 */
+            .xd-zz-v226-blind .card.thrownhighlight:not(.xd-zz-v309-heard),
+            .xd-zz-v226-blind .card.thrownhighlight:not(.xd-zz-v309-heard) *,
+            .xd-zz-v226-blind .card.xd-zz-v299-judge-card,
+            .xd-zz-v226-blind .card.xd-zz-v299-judge-card *,
+            .xd-zz-v226-blind .xd-zz-v299-judge-dialog,
+            .xd-zz-v226-blind .xd-zz-v299-judge-dialog * {
+                /* 子节点显式 visibility:visible 也不能穿透父层透明度。 */
+                opacity:0!important;visibility:hidden!important;pointer-events:none!important;
+            }
+            /* 普通正在结算/飞出的牌可以知道牌名，但闭眼不显示花色与点数。 */
+            .xd-zz-v226-blind .card.thrown:not(.thrownhighlight) .info,
+            .xd-zz-v226-blind .card.thrown:not(.thrownhighlight) .name2,
+            .xd-zz-v226-blind .card.thrown.xd-zz-v309-heard .info,
+            .xd-zz-v226-blind .card.thrown.xd-zz-v309-heard .name2 {
+                visibility:hidden!important;pointer-events:none!important;
+            }
+            /* 未口述的自行装备、火攻代价牌不向闭眼本机展示；仅标记动画副本。 */
+            .xd-zz-v226-blind .card.xd-zz-v297-unspoken-card,
+            .xd-zz-v226-blind .card.xd-zz-v297-unspoken-card *,
+            .xd-zz-v226-blind .card.xd-zz-v310-folded,
+            .xd-zz-v226-blind .card.xd-zz-v310-folded *,
+            .xd-zz-v226-blind .player .equips,
+            .xd-zz-v226-blind .player .equips *,
+            .xd-zz-v226-blind .player .judges,
+            .xd-zz-v226-blind .player .judges * {
+                visibility:hidden!important;pointer-events:none!important;
+            }
+            /* v309：盖了牌背的副本上，本体用内联 important 显示的说明条（如“X 过河拆桥”）、转化牌名也一并不显示。 */
+            .card.xd-zz-v309-veiled > .cardsetion,
+            .card.xd-zz-v309-veiled > .tempname,
+            .xd-zz-v226-blind .card.xd-zz-v309-heard > .tempname,
+            .xd-zz-v226-blind .card.xd-zz-v309-heard > .initmask,
+            .xd-zz-v226-blind .card.xd-zz-v310-declared > .cardsetion {
+                visibility:hidden!important;
+            }
+            /* 角色已死时，真实武将框继续照常进入 game.dead，只在庄周本地隐藏其阵亡视觉。 */
+            .player.xd-zz-v282-dead-source-hidden,
+            .player.xd-zz-v282-dead-source-hidden * {
+                visibility:hidden!important;pointer-events:none!important;
+            }
+            /* 仅庄周本人的装备区：闭眼只在视觉上遮蔽，真实装备卡与结算不动。 */
+            .xd-zz-v226-blind .player.xd-zz-v227-own-blind .equips,
+            .xd-zz-v226-blind .player.xd-zz-v227-own-blind .equip,
+            .xd-zz-v226-blind #me .equips,
+            .xd-zz-v226-blind #me .equip,
+            .xd-zz-v226-blind .xd-zz-v227-own-equips-hidden {
+                visibility:hidden!important;pointer-events:none!important;
+            }
+            /* v305：闭眼手选弃牌时，本人装备区的牌可以直接点（真实牌透明，上面盖原生牌背）。
+               只放开牌本身；空栏位、栏位名等其他内容仍然隐藏。 */
+            html.xd-zz-v226-blind.xd-zz-v305-equip-pick .player.xd-zz-v227-own-blind .equips .card,
+            html.xd-zz-v226-blind.xd-zz-v305-equip-pick #me .equips .card,
+            html.xd-zz-v226-blind.xd-zz-v305-equip-pick #me .equip .card,
+            html.xd-zz-v226-blind.xd-zz-v305-equip-pick #me .equips .card.equip,
+            html.xd-zz-v226-blind.xd-zz-v305-equip-pick .xd-zz-v227-own-equips-hidden .card {
+                visibility:visible!important;pointer-events:auto!important;
+            }
+        `;
+        document.head.appendChild(style);
+    };
+    Z.v226HideNativeReport = hidden => {
+        document.documentElement.classList.toggle("xd-zz-v226-blind", hidden);
+        Z.v309SyncBlindState?.(hidden);
+        // 一些无名杀主题的原生日志节点没有固定 ID，优先同时处理公开的 ui 引用。
+        for (const node of [ui?.log, ui?.historybar]) {
+            node?.classList?.toggle?.("xd-zz-v226-native-hidden", hidden);
+        }
+    };
+    // 部分主题把本人装备区挂在 player.node.equips，另一些放在 #me 下。
+    // 双重遮蔽只改本地节点的外观；不删除卡牌、不改 player.getCards('e')。
+    Z.v227OwnEquipNodes = new Set();
+    Z.v227SyncOwnEquipMask = () => {
+        if (typeof document === "undefined") return;
+        const active = !!(Z.v2proto && Z.local(game.me) && Z.blind(game.me) &&
+            Z.v226DreamReportActive && !Z.ended);
+        game.me?.classList?.toggle?.("xd-zz-v227-own-blind", active);
+        const candidates = active ? [
+            game.me?.node?.equips,
+            ui?.me?.querySelector?.(".equips"),
+            // 只处理确认位于本人的 #me 面板内的额外装备栏。
+            ui?.equip && ui?.me?.contains?.(ui.equip) ? ui.equip : null,
+        ].filter(Boolean) : [];
+        const next = new Set(candidates);
+        for (const node of Z.v227OwnEquipNodes) {
+            if (!next.has(node)) node?.classList?.remove?.("xd-zz-v227-own-equips-hidden");
+        }
+        for (const node of next) node?.classList?.add?.("xd-zz-v227-own-equips-hidden");
+        Z.v227OwnEquipNodes = next;
+    };
+    // 梦闻 UI：新闻随内容增高，较多时单独滚动；边缘渐隐背景保留文字对比度。
+    // 手动收起仅改变本地 UI，不影响记录、原生事件或其它玩家。
+    // V2.7.x：仅用 CSS 处理“左上清楚、右下渐隐”的阅读邀请态。
+    // 鼠标进入新闻列表或标题栏即完整恢复；不增加逐帧任务和图片解码。
+    Z.v226MakeDreamHost = () => {
+        const host = document.createElement("div");
+        host.className = "xd-zz-v226-dream-host";
+        const shadow = host.attachShadow({ mode: "open" });
+        const style = document.createElement("style");
+        style.textContent = `
+            :host {all:initial!important;position:fixed!important;top:33vh!important;left:53vw!important;
+                width:min(26vw,365px)!important;max-height:min(43vh,390px)!important;z-index:2147481000!important;
+                display:block!important;pointer-events:none!important;font:13px/1.55 "Microsoft YaHei","Noto Sans CJK SC",sans-serif!important;}
+            *,*::before,*::after {box-sizing:border-box!important;}
+            .xd-zz-v226-panel {width:100%!important;max-height:min(43vh,390px)!important;overflow:hidden!important;
+                padding:8px 12px 10px!important;border:0!important;border-left:2px solid rgba(213,194,153,.8)!important;
+                border-radius:7px 12px 12px 7px!important;
+                background:linear-gradient(90deg,rgba(20,30,36,.93) 0%,rgba(20,30,36,.88) 58%,
+                    rgba(20,30,36,.74) 82%,rgba(20,30,36,.50) 100%)!important;
+                box-shadow:0 5px 16px rgba(0,0,0,.13)!important;
+                color:#f5f0e3!important;display:flex!important;flex-direction:column!important;gap:5px!important;}
+            .xd-zz-v226-heading {display:flex!important;align-items:center!important;justify-content:space-between!important;
+                min-height:26px!important;gap:8px!important;border-bottom:0!important;padding-bottom:4px!important;
+                pointer-events:auto!important;}
+            .xd-zz-v226-title {font:bold 12px/1.5 serif!important;color:#f0d9a8!important;letter-spacing:.14em!important;}
+            /* 上下箭头共用同一按钮尺寸、同一 SVG 视口和相同的几何中心。 */
+            .xd-zz-v226-toggle {appearance:none!important;pointer-events:auto!important;cursor:pointer!important;
+                display:grid!important;place-items:center!important;flex:0 0 26px!important;
+                width:26px!important;height:26px!important;min-width:26px!important;min-height:26px!important;
+                border:0!important;border-radius:0!important;box-shadow:none!important;
+                background:transparent!important;color:#f0dfbf!important;padding:0!important;}
+            .xd-zz-v226-toggle svg {display:block!important;width:18px!important;height:18px!important;overflow:visible!important;}
+            .xd-zz-v226-toggle path {fill:none!important;stroke:currentColor!important;stroke-width:2.2!important;
+                stroke-linecap:round!important;stroke-linejoin:round!important;}
+            .xd-zz-v226-toggle:hover,.xd-zz-v226-toggle:focus-visible {
+                background:transparent!important;outline:none!important;color:#ffffff!important;}
+            .xd-zz-v226-list {overflow-x:hidden!important;overflow-y:auto!important;
+                max-height:calc(min(43vh,390px) - 55px)!important;min-height:0!important;
+                display:flex!important;flex:0 1 auto!important;flex-direction:column!important;
+                justify-content:flex-start!important;gap:3px!important;scrollbar-width:thin!important;
+                pointer-events:auto!important;}
+            .xd-zz-v226-line {flex:0 0 auto!important;font:13px/1.45 "Microsoft YaHei","Noto Sans CJK SC",sans-serif!important;
+                color:#fffaf0!important;overflow-wrap:anywhere!important;white-space:normal!important;
+                text-shadow:0 1px 2px rgba(0,0,0,.6)!important;
+                padding:1px 3px!important;border-radius:3px!important;
+                background:linear-gradient(90deg,rgba(13,23,30,.22),rgba(13,23,30,0) 96%)!important;}
+            /* 未注视时：标题与第一条仍可读；旧新闻越往下越淡，同一行越往右越淡。
+               仅改变本地合成/透明度，不重排消息、不修改对局日志。 */
+            :host(:not(:hover):not(.xd-zz-v226-collapsed)) .xd-zz-v226-panel {
+                background:radial-gradient(ellipse 115% 140% at 0% 0%,
+                    rgba(20,30,36,.75) 0%,rgba(20,30,36,.35) 20%,
+                    rgba(20,30,36,.07) 47%,rgba(20,30,36,0) 75%)!important;
+                box-shadow:0 3px 10px rgba(0,0,0,.07)!important;
+            }
+            /* 第一条即最新事件。即使右侧是较亮壁纸，也保留可读的暗衬。 */
+            :host(:not(:hover):not(.xd-zz-v226-collapsed)) .xd-zz-v226-line:first-child {
+                background:linear-gradient(90deg,rgba(13,23,30,.58),rgba(13,23,30,.42) 75%,
+                    rgba(13,23,30,.29) 100%)!important;
+            }
+            /* 旧消息同时受行透明度与水平方向的静态渐隐影响：左侧衰减较慢。 */
+            :host(:not(:hover):not(.xd-zz-v226-collapsed)) .xd-zz-v226-line:not(:first-child) {
+                -webkit-mask-image:linear-gradient(90deg,#000 0%,rgba(0,0,0,.72) 16%,
+                    rgba(0,0,0,.14) 48%,rgba(0,0,0,0) 78%)!important;
+                mask-image:linear-gradient(90deg,#000 0%,rgba(0,0,0,.72) 16%,
+                    rgba(0,0,0,.14) 48%,rgba(0,0,0,0) 78%)!important;
+            }
+            :host(:not(:hover):not(.xd-zz-v226-collapsed)) .xd-zz-v226-line:nth-child(2) {opacity:.66!important;}
+            :host(:not(:hover):not(.xd-zz-v226-collapsed)) .xd-zz-v226-line:nth-child(3) {opacity:.45!important;}
+            :host(:not(:hover):not(.xd-zz-v226-collapsed)) .xd-zz-v226-line:nth-child(4) {opacity:.29!important;}
+            :host(:not(:hover):not(.xd-zz-v226-collapsed)) .xd-zz-v226-line:nth-child(5) {opacity:.17!important;}
+            :host(:not(:hover):not(.xd-zz-v226-collapsed)) .xd-zz-v226-line:nth-child(6) {opacity:.10!important;}
+            :host(:not(:hover):not(.xd-zz-v226-collapsed)) .xd-zz-v226-line:nth-child(7) {opacity:.07!important;}
+            :host(:not(:hover):not(.xd-zz-v226-collapsed)) .xd-zz-v226-line:nth-child(n+8) {opacity:.04!important;}
+            /* 列表和标题栏已有可命中区，二者的 hover 都能使宿主 :hover 成立。
+               恢复原有实色背景和文字，无鼠标追踪、持续动画或额外事件监听。 */
+            .xd-zz-v226-name {color:#a7dcff!important;font-weight:700!important;}
+            /* 只让最新消息短暂出现；旧消息不反复动画。 */
+            .xd-zz-v237-ink-arrive {animation:xd-zz-v237-news-ink .42s cubic-bezier(.2,.7,.25,1) both!important;}
+            @keyframes xd-zz-v237-news-ink {
+                from {opacity:0;transform:translateY(-6px);filter:blur(1.2px);}
+                60% {opacity:.95;filter:blur(0);}
+                to {opacity:1;transform:translateY(0);filter:none;}
+            }
+            /* 折叠时宿主仍占原宽度，窄标签靠右：箭头的屏幕横坐标保持不变。 */
+            :host(.xd-zz-v226-collapsed) {width:min(26vw,365px)!important;max-width:none!important;}
+            :host(.xd-zz-v226-collapsed) .xd-zz-v226-panel {
+                width:max-content!important;margin-left:auto!important;padding:8px 12px 8px!important;
+                background:rgba(20,30,36,.9)!important;border-radius:6px!important;
+                box-shadow:0 3px 10px rgba(0,0,0,.16)!important;}
+            :host(.xd-zz-v226-collapsed) .xd-zz-v226-heading {border-bottom:0!important;padding-bottom:4px!important;}
+            :host(.xd-zz-v226-collapsed) .xd-zz-v226-list {display:none!important;}
+            @media(prefers-reduced-motion:reduce) {.xd-zz-v237-ink-arrive {animation:none!important;}}
+            @media(max-width:900px) {:host {left:49vw!important;width:min(35vw,330px)!important;top:36vh!important;}
+                :host(.xd-zz-v226-collapsed) {width:min(35vw,330px)!important;}}
+            @media(max-width:570px) {:host {left:auto!important;right:10px!important;width:210px!important;top:30vh!important;}
+                :host(.xd-zz-v226-collapsed) {width:210px!important;max-width:210px!important;}}
+        `;
+        const panel = document.createElement("section");
+        panel.className = "xd-zz-v226-panel";
+        panel.setAttribute("aria-label", "庄周梦境战报");
+        const heading = document.createElement("div");
+        heading.className = "xd-zz-v226-heading";
+        const title = document.createElement("div");
+        title.className = "xd-zz-v226-title";
+        title.textContent = "梦闻";
+        const toggle = document.createElement("button");
+        toggle.className = "xd-zz-v226-toggle";
+        toggle.type = "button";
+        const chevronNS = "http://www.w3.org/2000/svg";
+        const toggleIcon = document.createElementNS(chevronNS, "svg");
+        toggleIcon.setAttribute("viewBox", "0 0 24 22");
+        toggleIcon.setAttribute("aria-hidden", "true");
+        const togglePath = document.createElementNS(chevronNS, "path");
+        togglePath.setAttribute("d", "M4.5 14.5 L12 7 L19.5 14.5");
+        toggleIcon.appendChild(togglePath);
+        toggle.appendChild(toggleIcon);
+        toggle.setAttribute("aria-label", "收起梦闻");
+        toggle.setAttribute("aria-expanded", "true");
+        const list = document.createElement("div");
+        list.className = "xd-zz-v226-list";
+        list.id = "xd-zz-v226-news-list";
+        toggle.setAttribute("aria-controls", list.id);
+        list.setAttribute("aria-live", "polite");
+        list.setAttribute("aria-relevant", "additions");
+        // 新闻较多时允许独立滚动，禁止把面板手势传播成对局操作。
+        list.addEventListener("pointerdown", event => event.stopPropagation());
+        list.addEventListener("click", event => event.stopPropagation());
+        list.addEventListener("wheel", event => event.stopPropagation(), { passive: true });
+        // 只有收起按钮和新闻列表接收操作，面板其余区域不阻挡出牌。
+        toggle.addEventListener("pointerdown", event => event.stopPropagation());
+        toggle.addEventListener("click", event => {
+            event.stopPropagation();
+            const collapsed = host.classList.toggle("xd-zz-v226-collapsed");
+            togglePath.setAttribute("d", collapsed
+                ? "M4.5 7 L12 14.5 L19.5 7"
+                : "M4.5 14.5 L12 7 L19.5 14.5");
+            toggle.setAttribute("aria-expanded", String(!collapsed));
+            toggle.setAttribute("aria-label", (collapsed ? "展开" : "收起") + "梦闻");
+            if (!collapsed) list.scrollTop = 0;
+        });
+        heading.append(title,toggle);
+        panel.append(heading,list);
+        shadow.append(style,panel);
+        document.body.appendChild(host);
+        Z.v226DreamHost = host;
+        Z.v226DreamList = list;
+    };
+    // logSkill 的原生公开口述通常经 game.log 输出；只截取“发动了【技能】”这类公开声明。
+    // 未被口述的强制／隐藏／内部辅助技能一律不从技能事件中猜测并补写。
+    Z.v226HookPublicSkillLogs = () => {
+        if (Z.v226WrappedLog || typeof game.log !== "function") return;
+        const original = game.log;
+        const wrapped = function (...args) {
+            if (Z.v226DreamReportActive && Z.blind(game.me)) {
+                try {
+                    const speaker = args.find(value => (game.players || []).includes(value) ||
+                        (game.dead || []).includes(value));
+                    const utterance = args.filter(value => typeof value === "string")
+                        .join("").replace(/#[a-z]/gi, "").replace(/<[^>]*>/g, "");
+                    if (speaker && utterance.includes("发动了")) {
+                        const bracketed = utterance.match(/【([^】]{1,40})】/);
+                        const index = args.findIndex(value => typeof value === "string" && value.includes("发动了"));
+                        // 兼容本体 game.log(player, "发动了", "#g技能名") 的公开口述格式。
+                        const next = index >= 0 ? args.slice(index + 1).find(value => typeof value === "string") : "";
+                        const plain = String(next || "").replace(/^#[a-z]/gi, "").replace(/[【】]/g, "").trim();
+                        const skillName = bracketed?.[1] || (plain.length <= 20 ? plain : "");
+                        if (skillName && !/[\r\n<>]/.test(skillName)) Z.v226AddDreamLine(
+                            Z.v226PlayerName(speaker) + "发动了【" + skillName + "】。"
+                        );
+                    }
+                } catch (e) { /* 战报附加层不得干扰本体 log */ }
+            }
+            return original.apply(this,args);
+        };
+        game.log = wrapped;
+        Z.v226WrappedLog = wrapped;
+    };
+    Z.v226StartDreamReport = () => {
+        if (Z.v226DreamReportActive || !Z.local(game.me) || !Z.blind(game.me) || typeof document === "undefined") return;
+        Z.v226DreamReportActive = true;
+        Z.v226DreamLines = [];
+        Z.v226SeenUses = new WeakSet();
+        Z.v230SeenDamageEvents = new WeakSet();
+        Z.v226EnsureReportCSS();
+        Z.v226HideNativeReport(true);
+        Z.v227SyncOwnEquipMask();
+        Z.v226MakeDreamHost();
+        Z.v226HookPublicSkillLogs();
+    };
+    Z.v226StopDreamReport = () => {
+        Z.v226DreamReportActive = false;
+        Z.v226DreamLines.length = 0;
+        Z.v226SeenUses = new WeakSet();
+        try { Z.v226DreamHost?.remove(); } catch (e) {}
+        Z.v226DreamHost = null;
+        Z.v226DreamList = null;
+        if (typeof document !== "undefined") {
+            Z.v226HideNativeReport(false);
+            Z.v227SyncOwnEquipMask();
+        }
+    };
+    Z.v226SyncDreamReport = () => {
+        if (!Z.local(game.me) || !Z.blind(game.me) || Z.ended || !Z.v215ImageryActive) {
+            if (Z.v226DreamReportActive) Z.v226StopDreamReport();
+            return;
+        }
+        if (!Z.v226DreamReportActive) Z.v226StartDreamReport();
+        else if (Z.v226DreamHost?.isConnected) Z.v226HideNativeReport(true);
+        Z.v227SyncOwnEquipMask();
+    };
+    Z.v226RecordUseCard = event => {
+        if (!Z.v226DreamReportActive || !Z.blind(game.me) || !event?.card || !event.player) return;
+        if (Z.v226SeenUses.has(event)) return;
+        Z.v226SeenUses.add(event);
+        const source = event.player;
+        // 对自己使用装备没有口头宣告；不把本体 useCard 事件自动变成梦闻。
+        if (source !== game.me && Z.v297SelfEquipUse?.(event, source)) return;
+        const targets = [...new Set((event.targets || []).filter(target => target && target !== source))];
+        const who = Z.v226PlayerName(source);
+        const whoHTML = Z.v226PlayerHTML(source);
+        const targetsText = targets.map(target => Z.v226PlayerName(target)).join("、");
+        const targetsHTML = targets.map(target => Z.v226PlayerHTML(target)).join("、");
+        if (source === game.me && Z.blind(source)) {
+            // 庄周自己的闭眼盲用成功：只知道使用了牌和自己指定的目标。
+            // 尤其不许因为用牌无需指定目标，就在梦报里泄露它是装备牌。
+            Z.v226AddDreamLine(targets.length
+                ? who + "对" + targetsText + "使用了一张牌。"
+                : who + "未指定目标使用了一张牌。",
+                targets.length ? whoHTML + "对" + targetsHTML + "使用了一张牌。" : whoHTML + "未指定目标使用了一张牌。"
+            );
+            return;
+        }
+        const name = get.name(event.card, source) || event.card.name;
+        if (!name) return;
+        const cardName = String(get.translation(name) || name);
+        const safeCard = Z.v226Escape(cardName);
+        Z.v226AddDreamLine(targets.length
+            ? who + "对" + targetsText + "使用了【" + cardName + "】。"
+            : who + "使用了【" + cardName + "】。",
+            targets.length
+                ? whoHTML + "对" + targetsHTML + "使用了【" + safeCard + "】。"
+                : whoHTML + "使用了【" + safeCard + "】。"
+        );
+    };
+    // v309：打出的牌同样会被口述。其他角色写牌名；庄周自己只写“打出了一张牌”；改判（高亮打出）不写。
+    Z.v309SeenResponds = new WeakSet();
+    Z.v309RecordRespond = event => {
+        if (!Z.v226DreamReportActive || !Z.blind(game.me) || !event?.player || event.highlight) return;
+        if (Z.v309SeenResponds.has(event)) return;
+        Z.v309SeenResponds.add(event);
+        const source = event.player;
+        const who = Z.v226PlayerName(source);
+        const whoHTML = Z.v226PlayerHTML(source);
+        if (source === game.me) {
+            Z.v226AddDreamLine(who + "打出了一张牌。", whoHTML + "打出了一张牌。");
+            return;
+        }
+        const name = event.card ? (get.name(event.card, source) || event.card.name) : "";
+        if (!name) return;
+        const cardName = String(get.translation(name) || name);
+        Z.v226AddDreamLine(who + "打出了【" + cardName + "】。", whoHTML + "打出了【" + Z.v226Escape(cardName) + "】。");
+    };
+    Z.v226RecordTransformation = (target, transition) => {
+        if (!transition) return;
+        const from = Z.v226ImageryName(transition.from);
+        const to = Z.v226ImageryName(transition.to);
+        // 特殊视觉变化在本地报道；真正的目标、伤害信息只由已发生的公共事件产生。
+        Z.v226AddDreamLine(from + "变成了" + to + "。",
+            Z.v226ImageryHTML(transition.from) + "变成了" + Z.v226ImageryHTML(transition.to) + "。");
+    };
+    // 伤害与扣血本身没有口头宣告，不进入梦闻；已约定的角色形象变化仍正常触发。
+    // Only record and transform once for the exact same completed damage event.
+    // WeakSet preserves separate damageEnd events (even same victim / same amount).
+    Z.v230HandleDamageEnd = damage => {
+        if (!damage || typeof damage !== "object" || !(damage.num > 0) ||
+            !Z.v215ImageryActive || !Z.local(game.me) || !Z.blind(game.me) ||
+            Z.v230SeenDamageEvents.has(damage)) return false;
+        Z.v230SeenDamageEvents.add(damage);
+        if (damage.player && damage.player !== game.me) {
+            Z.v226RecordTransformation(damage.player, Z.v239OnHuiziDamaged(damage.player));
+            Z.v226RecordTransformation(damage.player, Z.v220OnDamaged(damage.player, damage));
+        }
+        return true;
+    };
+
+    Z.v215AssignImagery = players => {
+        const pool = Z.v215Shuffle(Z.v219RandomPool);
+        const fixed = new Set();
+        const free = [];
+        for (const player of players) {
+            const pinned = Z.v215ManualImage(player);
+            if (pinned) {
+                Z.v215ImageryMap.set(player, pinned);
+                fixed.add(pinned.id);
+            } else free.push(player);
+        }
+        // 未标记的角色照旧重新抽签。已固定的意象不参与普通随机分配。
+        // 用增广路径匹配，意象池足够时仍保证未标记角色互不重复，且避开上次意象。
+        const available = pool.filter(item => !fixed.has(item.id));
+        const ownerById = new Map();
+        const assigned = new Map();
+        const assign = (player, seen) => {
+            for (const image of Z.v215Shuffle(available)) {
+                if (image.id === Z.v215PreviousMap.get(player)?.id || seen.has(image.id)) continue;
+                seen.add(image.id);
+                const owner = ownerById.get(image.id);
+                if (!owner || assign(owner, seen)) {
+                    ownerById.set(image.id, player);
+                    assigned.set(player, image);
+                    return true;
+                }
+            }
+            return false;
+        };
+        for (const player of Z.v215Shuffle(free)) assign(player, new Set());
+        free.forEach((player, index) => {
+            let image = assigned.get(player);
+            if (!image) {
+                const remaining = available.filter(item =>
+                    !Array.from(Z.v215ImageryMap.values()).concat(Array.from(assigned.values()))
+                        .some(used => used.id === item.id)
+                );
+                image = Z.v215Shuffle(remaining)[0];
+            }
+            if (!image) {
+                // 超过意象池容量时允许重复意象；各角色仍由 player 对象分别映射，牌面不显示编号。
+                const source = pool[index % pool.length];
+                image = { ...source, name: source.name };
+            }
+            Z.v215ImageryMap.set(player, image);
+        });
+    };
+    Z.v215BeginImagery = player => {
+        if (!Z.local(player) || !Z.blind(player) || Z.v215ImageryActive) return;
+        Z.v237ClearLeaving?.();
+        Z.v237ClearCurtain?.();
+        Z.v215RemoveOverlays();
+        Z.v215ImageryMap.clear();
+        Z.v239DuelStates.clear();
+        Z.v239HarmlessProgress.clear();
+        Z.v239CatForms.clear();
+        Z.v239CatLocked.clear();
+        Z.v239CandidateUses = new WeakMap();
+        Z.v239FinishedUses = new WeakSet();
+        Z.v215ImageryActive = true;
+        const dreamSeats = Array.from(new Set([...(game.players || []), ...(game.dead || [])]))
+            .filter(p => p && p !== player);
+        Z.v282SnapshotDreamSeatSizes?.(dreamSeats);
+        Z.v215AssignImagery(dreamSeats);
+        Z.v241BeginDreamWallpaper?.();
+        Z.v215SyncImagery(player);
+        Z.v237PlayCurtain?.("enter");
+        Z.v226StartDreamReport?.();
+    };
+    Z.v215GetImagery = player => {
+        let image = Z.v215ImageryMap.get(player);
+        if (image) return image;
+        image = Z.v215ManualImage(player);
+        if (!image) {
+            const used = new Set(Array.from(Z.v215ImageryMap.values(), item => item.id));
+            const candidates = Z.v219RandomPool.filter(item => !used.has(item.id) &&
+                item.id !== Z.v215PreviousMap.get(player)?.id);
+            const fallback = Z.v219RandomPool.filter(item => !used.has(item.id));
+            image = Z.v215Shuffle(candidates.length ? candidates : fallback)[0];
+            if (!image) {
+                const base = Z.v219RandomPool[Z.v215ImageryMap.size % Z.v219RandomPool.length];
+                image = { ...base, name: base.name };
+            }
+        }
+        Z.v215ImageryMap.set(player, image);
+        return image;
+    };
+    Z.v216RefreshOverlayNames = () => {
+        Z.v296SyncWuxieDialogs?.();
+        // 梦境遮盖牌一律显示意象原名；不同玩家仍由真实 player 对象独立映射和选择。
+        for (const [player, record] of Z.v215Overlays) {
+            const image = Z.v215ImageryMap.get(player);
+            if (!image) continue;
+            const label = image.name;
+            // 仍可每帧发现新增/替换的角色节点，但未换形象时不再每帧重写整张武将牌 DOM。
+            const key = [image.id, label, image.glyph, image.hue, image.art || ""].join("\u0001");
+            if (record._xd_zz_renderedKey === key &&
+                record.name.textContent === label && record.glyph.textContent === image.glyph &&
+                record.art?._xd_zz_art === (image.art || "")) continue;
+            record.glyph.textContent = image.glyph;
+            record.name.textContent = label;
+            record.overlay.style.setProperty("--zz-ink", image.hue);
+            Z.v219SyncArt(record.overlay, record.art, image);
+            record.edit.setAttribute("aria-label", "更换“" + label + "”的角色形象");
+            record.node.setAttribute?.("aria-label", "角色形象·" + label);
+            record._xd_zz_renderedKey = key;
+        }
+    };
+    Z.v216RandomizeOne = player => {
+        const used = new Set(Array.from(Z.v215ImageryMap, ([other, image]) =>
+            other === player ? null : image.id).filter(Boolean));
+        const pool = Z.v215Shuffle(Z.v219RandomPool.filter(item => !used.has(item.id)));
+        const oldId = Z.v215ImageryMap.get(player)?.id;
+        const image = pool.find(item => item.id !== oldId) || pool[0] ||
+            Z.v215Shuffle(Z.v219RandomPool.filter(item => item.id !== oldId))[0] ||
+            Z.v219RandomPool[0];
+        Z.v215ImageryMap.set(player, image);
+        return image;
+    };
+    // V2.8.5：梦境笔记里的“角色”既可能仍存活，也可能已经进入 game.dead。
+    // 编辑的只是庄周本地意象映射，因此死者与活人的改标资格一致。
+    Z.v285EditableImageryPlayer = player => !!(
+        player && player !== game.me &&
+        ((game.players || []).includes(player) || (game.dead || []).includes(player))
+    );
+    Z.v216SetManualImagery = (player, id, art) => {
+        if (!Z.v215ImageryActive || !Z.blind(game.me) || !Z.v285EditableImageryPlayer(player)) return;
+        const base = Z.v215ImageryPool.find(item => item.id === id);
+        if (!base || (id === "grilled_fish" && art && !Z.v287GrilledVariants.some(variant => variant.art === art))) return;
+        Z.v287GrilledArts.delete(player);
+        const image = Z.v287GrilledImage(player, base, false, art || base.art);
+        Z.v220PersistentForms.delete(player);
+        Z.v239DuelStates.delete(player); // 玩家手动改标后，旧的往返进度作废。
+        Z.v239HarmlessProgress.delete(player);
+        Z.v239CatForms.delete(player);
+        Z.v239CatLocked.delete(player);
+        Z.v215ManualImagery.set(player, image.id);
+        Z.v215ImageryMap.set(player, image);
+        // 手动占用了另一个随机角色的意象时，只重抽那个随机角色，不动别人的笔记。
+        for (const [other, otherImage] of Z.v215ImageryMap) {
+            if (other !== player && otherImage.id === image.id && !Z.v215ManualImagery.has(other)) {
+                Z.v216RandomizeOne(other);
+            }
+        }
+        Z.v216RefreshOverlayNames();
+        if ((game.dead || []).includes(player)) Z.v282EnsureDeadDreamShell?.(player);
+    };
+    Z.v216ResetManualImagery = player => {
+        if (!Z.v215ImageryActive || !Z.blind(game.me) || !Z.v285EditableImageryPlayer(player)) return;
+        Z.v215ManualImagery.delete(player);
+        Z.v287GrilledArts.delete(player);
+        Z.v220PersistentForms.delete(player);
+        Z.v239DuelStates.delete(player);
+        Z.v239HarmlessProgress.delete(player);
+        Z.v239CatForms.delete(player);
+        Z.v239CatLocked.delete(player);
+        Z.v216RandomizeOne(player);
+        Z.v216RefreshOverlayNames();
+        if ((game.dead || []).includes(player)) Z.v282EnsureDeadDreamShell?.(player);
+    };
+    // V2.7.18: isolate the entire optional imagery chooser from global Noname UI CSS.
+    // Do not use document.head rules for this modal; the arena has aggressive layout selectors.
+    Z.v218ChooserCSS = `
+            :host {
+                all:initial!important;
+                position:fixed!important; inset:0!important; z-index:2147483000!important;
+                display:block!important; pointer-events:auto!important;
+                font:15px/1.4 Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif!important;
+                color:#24485c!important; isolation:isolate!important;
+            }
+            *,*::before,*::after {box-sizing:border-box!important;}
+            button,input {font:inherit!important; letter-spacing:normal!important; text-transform:none!important;}
+            button {appearance:none!important; -webkit-appearance:none!important; flex-shrink:0!important;}
+            .xd-zz-v216-backdrop {width:100%!important;height:100%!important;}
+            .xd-zz-v216-backdrop {
+                position:fixed!important; inset:0!important; z-index:2147483000!important;
+                display:flex!important; align-items:center!important; justify-content:center!important;
+                background:rgba(13,34,49,.38)!important; pointer-events:auto!important;
+            }
+            .xd-zz-v216-palette {
+                box-sizing:border-box!important; width:min(760px,94vw)!important;
+                height:min(700px,82vh)!important; min-height:0!important;
+                display:flex!important; flex-direction:column!important; gap:10px!important;
+                overflow:hidden!important; padding:16px!important;
+                background:#eef5f8!important; color:#24485c!important;
+                border:1px solid #8fb7c4!important; border-radius:14px!important;
+                box-shadow:0 12px 40px rgba(0,0,0,.5)!important;
+                font:15px/1.4 sans-serif!important;
+            }
+            .xd-zz-v216-palette header {display:flex!important;align-items:flex-start!important;justify-content:space-between!important;gap:8px!important;flex:0 0 auto!important;}
+            .xd-zz-v216-heading {display:flex!important;flex-direction:column!important;gap:3px!important;}
+            .xd-zz-v216-heading strong {font-size:20px!important;letter-spacing:.03em!important;}
+            .xd-zz-v216-heading span {font-size:12px!important;opacity:.82!important;}
+            .xd-zz-v216-palette header button {font-size:24px!important;padding:0 8px!important;cursor:pointer!important;line-height:1!important;}
+            .xd-zz-v216-current {
+                display:grid!important; grid-template-columns:120px minmax(0,1fr)!important; gap:12px!important; align-items:center!important;
+                padding:10px!important; border-radius:12px!important; background:linear-gradient(135deg,#f7fbfd,#e0edf3)!important;
+                border:1px solid #bfd4de!important; flex:0 0 auto!important;
+            }
+            .xd-zz-v216-current-thumb {
+                position:relative!important; height:118px!important; border-radius:12px!important; overflow:hidden!important;
+                display:flex!important; align-items:center!important; justify-content:center!important;
+                background:linear-gradient(150deg,#f8fcff 0%,#dbeaf1 55%,#cbe0e8 100%)!important;
+                border:1px solid rgba(95,146,174,.75)!important; box-shadow:inset 0 0 14px rgba(63,102,136,.15)!important;
+            }
+            .xd-zz-v216-current-thumb::before {
+                content:""; position:absolute; inset:6px; border-radius:10px; border:1px solid rgba(255,255,255,.72);
+            }
+            .xd-zz-v216-current-glyph {font-size:56px!important; line-height:1!important; font-weight:600!important; color:var(--zz-ink,#548aa4)!important; text-shadow:0 2px 0 #fff,0 0 16px rgba(255,255,255,.75)!important;}
+            .xd-zz-v216-current-chip {
+                position:absolute!important; right:8px!important; top:8px!important; padding:3px 7px!important; border-radius:999px!important;
+                background:rgba(255,255,255,.94)!important; border:1px solid #bdd0d8!important; color:#496777!important; font-size:11px!important; font-weight:700!important;
+            }
+            .xd-zz-v216-current-meta {display:flex!important; flex-direction:column!important; gap:6px!important; min-width:0!important;}
+            .xd-zz-v216-current-title {font-size:18px!important; font-weight:700!important; color:#28485a!important;}
+            .xd-zz-v216-current-note {font-size:13px!important; opacity:.84!important;}
+            .xd-zz-v216-palette input[type=search] {
+                box-sizing:border-box!important; width:100%!important; padding:10px 12px!important; flex:0 0 auto!important;
+                border:1px solid #94b5c2!important; border-radius:9px!important; background:white!important; color:#24485c!important;
+            }
+            .xd-zz-v216-section-title {font-size:14px!important; font-weight:700!important; color:#4b6b7a!important; flex:0 0 auto!important;}
+            .xd-zz-v216-scroller {
+                flex:1 1 auto!important; min-height:0!important; width:100%!important; overflow:auto!important; padding-right:4px!important;
+                border-top:1px solid rgba(148,181,194,.45)!important; border-bottom:1px solid rgba(148,181,194,.45)!important;
+            }
+            .xd-zz-v216-grid {
+                display:grid!important; grid-template-columns:repeat(4,minmax(0,1fr))!important; width:100%!important;
+                gap:10px!important; padding:12px 1px!important; align-content:start!important;
+            }
+            .xd-zz-v216-choice {
+                display:flex!important; flex-direction:column!important; gap:8px!important; align-items:stretch!important;
+                padding:8px!important; cursor:pointer!important; border-radius:12px!important;
+                min-width:0!important; width:100%!important; white-space:normal!important;
+                background:#ffffff!important; border:1px solid #b5cdd8!important; color:#2e566a!important; text-align:left!important;
+                box-shadow:0 1px 4px rgba(27,65,89,.08)!important;
+            }
+            .xd-zz-v216-choice:hover {transform:translateY(-1px)!important; box-shadow:0 4px 12px rgba(27,65,89,.14)!important;}
+            .xd-zz-v216-choice-thumb {
+                position:relative!important; height:124px!important; border-radius:10px!important; overflow:hidden!important;
+                display:flex!important; align-items:center!important; justify-content:center!important;
+                background:linear-gradient(150deg,#f8fcff 0%,#dbeaf1 55%,#cbe0e8 100%)!important;
+                border:1px solid rgba(95,146,174,.68)!important; box-shadow:inset 0 0 14px rgba(63,102,136,.12)!important;
+            }
+            .xd-zz-v216-choice-thumb::before {content:""; position:absolute; inset:6px; border:1px solid rgba(255,255,255,.72); border-radius:8px;}
+            .xd-zz-v216-choice-glyph {font-size:52px!important; line-height:1!important; font-weight:600!important; color:var(--zz-ink,#548aa4)!important; text-shadow:0 2px 0 #fff,0 0 16px rgba(255,255,255,.75)!important;}
+            .xd-zz-v216-choice-badge {
+                position:absolute!important; right:8px!important; top:8px!important; padding:2px 7px!important; border-radius:999px!important;
+                background:rgba(255,255,255,.94)!important; border:1px solid #bdd0d8!important; color:#547180!important; font-size:10px!important; font-weight:700!important;
+            }
+            .xd-zz-v216-choice-meta {display:flex!important; flex-direction:column!important; gap:3px!important; padding:0 1px 2px!important; min-width:0!important;}
+            .xd-zz-v216-choice-title {font-size:16px!important; font-weight:700!important; color:var(--zz-ink,#34596e)!important;}
+            .xd-zz-v216-choice-subtitle {font-size:11px!important; opacity:.75!important;}
+            .xd-zz-v216-choice.xd-zz-v216-chosen {border:2px solid #489bbc!important; background:#d6edf5!important;}
+            .xd-zz-v216-choice[hidden] {display:none!important;}
+            .xd-zz-v216-footer {display:flex!important; align-items:center!important; justify-content:space-between!important; gap:10px!important; flex:0 0 auto!important; flex-wrap:wrap!important;}
+            .xd-zz-v216-reset {padding:8px 14px!important; cursor:pointer!important; border-radius:8px!important; background:#dde9ed!important; color:#34596e!important; border:1px solid #b5cdd8!important;}
+            .xd-zz-v216-footer-note {font-size:12px!important; opacity:.78!important;}
+
+            .xd-zz-v216-current-thumb .xd-zz-v219-art,
+            .xd-zz-v216-choice-thumb .xd-zz-v219-art {
+                position:absolute!important; inset:0!important; width:100%!important; height:100%!important;
+                object-fit:contain!important; object-position:center center!important;
+                pointer-events:none!important; border-radius:inherit!important;
+            }
+            .xd-zz-v216-current-thumb.xd-zz-v219-has-art,
+            .xd-zz-v216-choice-thumb.xd-zz-v219-has-art {background:transparent!important; box-shadow:none!important;}
+            .xd-zz-v216-current-thumb.xd-zz-v219-has-art .xd-zz-v216-current-glyph,
+            .xd-zz-v216-choice-thumb.xd-zz-v219-has-art .xd-zz-v216-choice-glyph {display:none!important;}
+            .xd-zz-v216-current-chip,.xd-zz-v216-choice-badge {z-index:2!important;}
+            .xd-zz-v216-current-thumb::before,.xd-zz-v216-choice-thumb::before {z-index:1!important; pointer-events:none!important;}
+            .xd-zz-v219-art[hidden] {display:none!important;}
+            @media (max-width:740px) {
+                .xd-zz-v216-grid {grid-template-columns:repeat(3,minmax(0,1fr))!important;}
+                .xd-zz-v216-current {grid-template-columns:86px minmax(0,1fr)!important;}
+                .xd-zz-v216-current-thumb {height:86px!important;}
+                .xd-zz-v216-current-glyph {font-size:42px!important;}
+            }
+            @media (max-width:540px) {
+                .xd-zz-v216-grid {grid-template-columns:repeat(2,minmax(0,1fr))!important;}
+                .xd-zz-v216-palette {padding:10px!important;gap:7px!important;}
+                .xd-zz-v216-choice-thumb {height:90px!important;}
+                .xd-zz-v216-current-note,.xd-zz-v216-footer-note {display:none!important;}
+                .xd-zz-v216-heading strong {font-size:18px!important;}
+            }
+            @media (max-height:650px) {
+                .xd-zz-v216-current-thumb {height:70px!important;}
+                .xd-zz-v216-current-glyph {font-size:36px!important;}
+                .xd-zz-v216-choice-thumb {height:95px!important;}
+                .xd-zz-v216-palette {height:88vh!important;max-height:88vh!important;}
+            }
+    `;
+    Z.v216OpenChooser = player => {
+        if (!Z.v215ImageryActive || !Z.blind(game.me) || !Z.v285EditableImageryPlayer(player)) return;
+        const hasDreamSurface = Z.v215Overlays.has(player) || Z.v282DeadDreamShells?.has?.(player);
+        if (!hasDreamSurface) return;
+        Z.v215CloseChooser();
+        const stop = e => { e.stopPropagation(); };
+        const host = document.createElement("div");
+        host.className = "xd-zz-v218-chooser-host";
+        const shadow = host.attachShadow({ mode: "open" });
+        const shadowStyle = document.createElement("style");
+        shadowStyle.textContent = Z.v218ChooserCSS;
+        const backdrop = document.createElement("div");
+        backdrop.className = "xd-zz-v216-backdrop";
+        shadow.append(shadowStyle, backdrop);
+        const panel = document.createElement("section");
+        panel.className = "xd-zz-v216-palette";
+        panel.setAttribute("role", "dialog");
+        panel.setAttribute("aria-label", "更换角色形象");
+        const currentImage = Z.v215ImageryMap.get(player) || Z.v215GetImagery(player);
+        const manual = Z.v215ManualImagery.has(player);
+
+        const header = document.createElement("header");
+        const headingWrap = document.createElement("div");
+        headingWrap.className = "xd-zz-v216-heading";
+        const heading = document.createElement("strong");
+        heading.textContent = "更换角色形象";
+        const sub = document.createElement("span");
+        sub.textContent = "随机分配后，可由庄周手动改标；本局后续闭眼保留。";
+        headingWrap.append(heading, sub);
+        const close = document.createElement("button");
+        close.type = "button";
+        close.textContent = "×";
+        close.setAttribute("aria-label", "关闭");
+        close.addEventListener("click", e => { stop(e); Z.v215CloseChooser(); });
+        header.append(headingWrap, close);
+
+        const current = document.createElement("div");
+        current.className = "xd-zz-v216-current";
+        current.style.setProperty("--zz-ink", currentImage?.hue || "#5a98b4");
+        const currentThumb = document.createElement("div");
+        currentThumb.className = "xd-zz-v216-current-thumb";
+        const currentGlyph = document.createElement("span");
+        currentGlyph.className = "xd-zz-v216-current-glyph";
+        currentGlyph.textContent = currentImage?.glyph || "梦";
+        const currentChip = document.createElement("span");
+        currentChip.className = "xd-zz-v216-current-chip";
+        currentChip.textContent = "当前";
+        currentThumb.append(Z.v219MakeArt(currentThumb, currentImage), currentGlyph, currentChip);
+        const currentMeta = document.createElement("div");
+        currentMeta.className = "xd-zz-v216-current-meta";
+        const currentTitle = document.createElement("div");
+        currentTitle.className = "xd-zz-v216-current-title";
+        currentTitle.textContent = (currentImage?.name || "未定") + (manual ? " · 手动标记" : " · 随机分配");
+        const currentNote = document.createElement("div");
+        currentNote.className = "xd-zz-v216-current-note";
+        currentNote.textContent = "点击下方卡片即可立刻替换；整张武将牌仍可正常选目标。";
+        currentMeta.append(currentTitle, currentNote);
+        current.append(currentThumb, currentMeta);
+
+        const search = document.createElement("input");
+        search.type = "search";
+        search.placeholder = "搜索角色形象：鱼、惠子、鲲鹏……";
+        search.setAttribute("aria-label", "搜索角色形象");
+
+        const sectionTitle = document.createElement("div");
+        sectionTitle.className = "xd-zz-v216-section-title";
+        sectionTitle.textContent = "选择新的角色形象";
+
+        const scroller = document.createElement("div");
+        scroller.className = "xd-zz-v216-scroller";
+        const grid = document.createElement("div");
+        grid.className = "xd-zz-v216-grid";
+        const options = [];
+        for (const image of Z.v287ChoiceImages()) {
+            const choice = document.createElement("button");
+            choice.type = "button";
+            choice.className = "xd-zz-v216-choice";
+            choice.style.setProperty("--zz-ink", image.hue);
+            if (Z.v215ManualImagery.get(player) === image.id &&
+                (image.id !== "grilled_fish" || Z.v287GrilledArts.get(player) === image.art)) {
+                choice.classList.add("xd-zz-v216-chosen");
+            }
+
+            const thumb = document.createElement("div");
+            thumb.className = "xd-zz-v216-choice-thumb";
+            const glyph = document.createElement("div");
+            glyph.className = "xd-zz-v216-choice-glyph";
+            glyph.textContent = image.glyph;
+            const badge = document.createElement("div");
+            badge.className = "xd-zz-v216-choice-badge";
+            badge.textContent = "形象";
+            thumb.append(Z.v219MakeArt(thumb, image), glyph, badge);
+
+            const meta = document.createElement("div");
+            meta.className = "xd-zz-v216-choice-meta";
+            const title = document.createElement("div");
+            title.className = "xd-zz-v216-choice-title";
+            title.textContent = image.choiceName || image.name;
+            const subtitle = document.createElement("div");
+            subtitle.className = "xd-zz-v216-choice-subtitle";
+            subtitle.textContent = image.glyph + " · 点击替换";
+            meta.append(title, subtitle);
+            choice.append(thumb, meta);
+
+            choice.addEventListener("click", e => {
+                stop(e);
+                Z.v216SetManualImagery(player, image.id, image.art);
+                Z.v215CloseChooser();
+            });
+            options.push({ image, choice });
+            grid.appendChild(choice);
+        }
+        scroller.appendChild(grid);
+        search.addEventListener("input", () => {
+            const q = search.value.trim().toLowerCase();
+            let visible = 0;
+            for (const { image, choice } of options) {
+                const hit = !q || (image.choiceName || image.name).toLowerCase().includes(q) || image.id.toLowerCase().includes(q) || image.glyph.toLowerCase().includes(q);
+                choice.hidden = !hit;
+                if (hit) visible++;
+            }
+            sectionTitle.textContent = visible ? "选择新的角色形象" : "没有找到匹配的角色形象";
+        });
+
+        const footer = document.createElement("div");
+        footer.className = "xd-zz-v216-footer";
+        const reset = document.createElement("button");
+        reset.type = "button";
+        reset.className = "xd-zz-v216-reset";
+        reset.textContent = "恢复随机分配";
+        reset.addEventListener("click", e => {
+            stop(e);
+            Z.v216ResetManualImagery(player);
+            Z.v215CloseChooser();
+        });
+        const hint = document.createElement("span");
+        hint.className = "xd-zz-v216-footer-note";
+        hint.textContent = "手动标记会在本局后续闭眼中保留。";
+        footer.append(reset, hint);
+
+        panel.append(header, current, search, sectionTitle, scroller, footer);
+        backdrop.appendChild(panel);
+        for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend", "click"]) {
+            backdrop.addEventListener(eventName, e => {
+                if (eventName === "click" && e.target === backdrop) Z.v215CloseChooser();
+                stop(e);
+            });
+        }
+        panel.addEventListener("keydown", e => {
+            if (e.key === "Escape") { stop(e); Z.v215CloseChooser(); }
+            else if (e.key !== "Tab") stop(e);
+        });
+        // Only the isolated overlay is removed on close; no CSS leaks into the game.
+        Z.v215Chooser = host;
+        // Shadow DOM events are composed: stop any residual click reaching the arena.
+        for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend", "click"]) {
+            host.addEventListener(eventName, e => e.stopPropagation());
+        }
+        document.body.appendChild(host);
+        try { search.focus(); } catch (e) {}
+    };
+    Z.v215EnsureStyle = () => {
+        if (document.getElementById("xd-zz-v215-imagery-style")) return;
+        const style = document.createElement("style");
+        style.id = "xd-zz-v215-imagery-style";
+        style.textContent = `
+            /* 只盖住别人真实的武将牌；不改 player DOM 的事件、选择与原生指示线。 */
+            /* 某些主题把姓名或体力放在头像盒外，另外隐藏这些原生文本以避免漏出。 */
+            .player.xd-zz-v215-masked .name,
+            .player.xd-zz-v215-masked .name2,
+            .player.xd-zz-v215-masked .hp,
+            .player.xd-zz-v215-masked .count,
+            .player.xd-zz-v215-masked .identity,
+            .player.xd-zz-v215-masked .marks,
+            .player.xd-zz-v215-masked .avatar,
+            .player.xd-zz-v215-masked .avatar2 { opacity:0!important; }
+            /* v309：标记透明后仍能悬停弹出介绍（可能列出武将牌上的牌），闭眼时一并不可悬停。 */
+            .player.xd-zz-v215-masked .marks,
+            .player.xd-zz-v215-masked .marks * { pointer-events:none!important; }
+            /* Only while masked: allow the edit button to project beyond the portrait's top-right corner. */
+            .player.xd-zz-v215-masked {overflow:visible!important;}
+            .player.xd-zz-v215-masked .xd-zz-v215-veil,
+            .xd-zz-v215-masked.player .xd-zz-v215-veil,
+            .xd-zz-v237-leavehost .xd-zz-v215-veil,
+            .xd-zz-v282-dead-shell .xd-zz-v215-veil {
+                position:absolute!important; inset:3px!important; z-index:10000!important;
+                display:flex!important; flex-direction:column!important; justify-content:center!important;
+                align-items:center!important; gap:2px!important; overflow:visible!important;
+                pointer-events:none!important; user-select:none!important; border-radius:8px!important;
+                background:linear-gradient(140deg,#f1f7fa 0%,#daeaf0 52%,#c8dfe8 100%)!important;
+                border:1px solid rgba(95,146,174,.8)!important;
+                color:#28485a!important; box-shadow:inset 0 0 14px rgba(63,102,136,.15)!important;
+                font-family:"Noto Serif CJK SC","Songti SC","SimSun",serif!important;
+            }
+            .xd-zz-v215-veil::before {
+                content:""; position:absolute; inset:6px; border:1px solid rgba(255,255,255,.72);
+                border-radius:7px; pointer-events:none;
+            }
+            .xd-zz-v215-glyph {
+                font-size:clamp(26px,3.1vw,50px)!important; line-height:1!important;
+                font-weight:600!important; color:var(--zz-ink,#548aa4)!important;
+                text-shadow:0 2px 0 #fff,0 0 16px rgba(255,255,255,.75)!important;
+                white-space:nowrap!important;
+            }
+            .xd-zz-v215-name {
+                padding:1px 4px!important; border-radius:5px!important; background:#f6fafc!important;
+                font-size:clamp(11px,1.12vw,16px)!important; line-height:1.25!important;
+                font-weight:700!important; letter-spacing:.06em!important; white-space:nowrap!important;
+            }
+            .xd-zz-v215-veil .xd-zz-v219-art {
+                position:absolute!important; inset:0!important; width:100%!important; height:100%!important;
+                object-fit:contain!important; object-position:center center!important;
+                pointer-events:none!important; border-radius:inherit!important;
+            }
+            /* V2.7.25: the battlefield veil itself (not the separate chooser) still
+               inherited the original cyan 1px border and a 3px inset.  Cover the
+               native portrait's colored edge while keeping the external dark rim;
+               contain letterboxing, if any, should be dark rather than pale blue. */
+            .player.xd-zz-v215-masked .xd-zz-v215-veil.xd-zz-v219-has-art,
+            .xd-zz-v215-masked.player .xd-zz-v215-veil.xd-zz-v219-has-art,
+            .xd-zz-v237-leavehost .xd-zz-v215-veil.xd-zz-v219-has-art,
+            .xd-zz-v282-dead-shell .xd-zz-v215-veil.xd-zz-v219-has-art {
+                inset:1px!important;
+                border:0!important;
+                outline:0!important;
+                background:#231d19!important;
+                box-shadow:none!important;
+            }
+            .xd-zz-v215-veil.xd-zz-v219-has-art .xd-zz-v215-glyph {display:none!important;}
+            .xd-zz-v215-veil.xd-zz-v219-has-art::before {display:none!important;}
+            .xd-zz-v215-veil.xd-zz-v219-has-art .xd-zz-v215-name {
+                position:absolute!important; z-index:1!important; bottom:6px!important;
+                max-width:calc(100% - 10px)!important; overflow:hidden!important; text-overflow:ellipsis!important;
+                padding:2px 6px!important; border:1px solid rgba(134,177,193,.75)!important;
+                background:rgba(244,250,253,.95)!important;
+                box-shadow:0 1px 4px rgba(18,48,64,.32)!important;
+            }
+            .xd-zz-v215-veil .xd-zz-v219-art[hidden] {display:none!important;}
+            .xd-zz-v215-veil::before {z-index:1!important;}
+            .xd-zz-v215-note { font:10px/1.1 sans-serif!important; opacity:.7!important; }
+            /* The button straddles the OUTSIDE upper-right edge; the image remains fully available beneath it.
+               Only the button itself catches pointer events, so normal portrait selection still works. */
+            .xd-zz-v215-veil .xd-zz-v216-edit {
+                position:absolute!important; top:-14px!important; right:-14px!important; z-index:3!important;
+                pointer-events:auto!important; cursor:pointer!important;
+                width:26px!important; height:26px!important; line-height:24px!important;
+                padding:0!important; margin:0!important; border:1px solid #729caa!important;
+                background:rgba(247,252,255,.97)!important; color:#34596e!important;
+                border-radius:7px!important; font:bold 14px sans-serif!important;
+                box-shadow:0 1px 4px rgba(10,45,65,.3)!important;
+            }
+
+
+            
+            .xd-zz-v219-art {
+                opacity:1!important; transform:scale(1)!important; filter:none!important;
+                transition:opacity .34s ease, transform .42s cubic-bezier(.22,.61,.36,1), filter .42s ease!important;
+                will-change:opacity,transform,filter;
+            }
+            .xd-zz-v219-art.xd-zz-v219-swapping {
+                opacity:0!important; transform:scale(1.04)!important; filter:blur(7px) saturate(1.12)!important;
+            }
+            .xd-zz-v219-switchfx { position:relative!important; overflow:hidden!important; }
+            .xd-zz-v219-switchfx::after {
+                content:""; position:absolute; inset:-14%!important; pointer-events:none!important; z-index:2!important;
+                background:linear-gradient(115deg, rgba(255,255,255,0) 12%, rgba(255,246,214,.17) 42%, rgba(165,225,255,.33) 50%, rgba(255,246,214,.15) 58%, rgba(255,255,255,0) 86%);
+                transform:translateX(-118%) rotate(7deg);
+                animation:xd-zz-v219-sheen .56s ease forwards;
+                mix-blend-mode:screen;
+            }
+            @keyframes xd-zz-v219-sheen {
+                from { transform:translateX(-118%) rotate(7deg); opacity:0; }
+                20% { opacity:.95; }
+                to { transform:translateX(118%) rotate(7deg); opacity:0; }
+            }
+            .avatar.xd-zz-v233-own-butterfly,
+            .avatar2.xd-zz-v233-own-butterfly {
+                animation:xd-zz-v233-butterfly-breathe 3.2s ease-in-out infinite!important;
+                box-shadow:0 0 0 1px rgba(255,244,205,.78), 0 0 10px rgba(120,180,255,.28), 0 0 22px rgba(255,219,140,.22)!important;
+                filter:saturate(1.04) brightness(1.03)!important;
+            }
+            @keyframes xd-zz-v233-butterfly-breathe {
+                0%,100% { transform:scale(1); filter:saturate(1.04) brightness(1.03); box-shadow:0 0 0 1px rgba(255,244,205,.78), 0 0 10px rgba(120,180,255,.28), 0 0 22px rgba(255,219,140,.22); }
+                50% { transform:scale(1.018); filter:saturate(1.10) brightness(1.08); box-shadow:0 0 0 1px rgba(255,248,220,.92), 0 0 16px rgba(126,190,255,.40), 0 0 28px rgba(255,228,155,.30); }
+            }
+            /* V2.7.37 – each newly imagined character rises softly out of mist. */
+            .player.xd-zz-v215-masked .xd-zz-v215-veil.xd-zz-v237-entering {
+                animation:xd-zz-v237-appear .67s cubic-bezier(.19,.72,.28,1) both!important;
+            }
+            @keyframes xd-zz-v237-appear {
+                from {opacity:0;transform:translateY(9px) scale(.955);filter:blur(4px);}
+                65% {opacity:.94;filter:blur(.5px);}
+                to {opacity:1;transform:translateY(0) scale(1);filter:none;}
+            }
+            /* These fixed ghosts are inert copies of the old dream cards, not
+               actual game players. Original targets are unmasked immediately. */
+            .xd-zz-v237-leavehost {
+                position:fixed!important;margin:0!important;padding:0!important;
+                border:0!important;background:transparent!important;
+                transform:none;overflow:visible!important;isolation:isolate!important;
+                pointer-events:none!important;user-select:none!important;
+                z-index:2147480900!important;
+                animation:xd-zz-v237-dissolve .50s ease-in both!important;
+            }
+            .xd-zz-v237-leavehost .xd-zz-v216-edit {display:none!important;}
+            /* 死亡梦境外壳固定在闭眼前的座位中心，不继承真实死者的翻转/上移 transform。 */
+            .xd-zz-v282-dead-shell {
+                position:fixed!important;margin:0!important;padding:0!important;border:0!important;
+                box-sizing:border-box!important;border-radius:8px!important;
+                box-shadow:0 0 0 1px rgba(0,0,0,.8),0 2px 6px rgba(0,0,0,.5);
+                background:transparent!important;transform:none!important;overflow:visible!important;
+                isolation:isolate!important;pointer-events:auto!important;user-select:none!important;
+                z-index:2147480900!important;cursor:pointer!important;
+            }
+            .xd-zz-v282-dead-shell.xd-zz-v2-proto-selected {
+                outline:3px solid #9be9ff!important;outline-offset:1px!important;
+            }
+            /* V2.8.5：阵亡后的梦境外壳仍可改标；复用活人右上角同一枚“换”按钮。 */
+            .xd-zz-v282-dead-shell .xd-zz-v216-edit {display:block!important;}
+            @keyframes xd-zz-v237-dissolve {
+                from {opacity:1;transform:translateY(0) scale(1);filter:blur(0);}
+                to {opacity:0;transform:translateY(-7px) scale(1.025);filter:blur(5px);}
+            }
+            /* One-shot veiled lighting; lower than the isolated edit menu and
+               dream news, with pointer-events:none so nothing blocks the arena. */
+            .xd-zz-v237-curtain {
+                position:fixed!important;inset:0!important;z-index:2147480800!important;
+                pointer-events:none!important;user-select:none!important;
+                background:radial-gradient(ellipse at 55% 46%,rgba(179,217,255,.28),transparent 62%),
+                    linear-gradient(125deg,rgba(255,243,216,.15),rgba(117,164,232,.10),rgba(251,227,211,.09));
+                opacity:0;mix-blend-mode:screen;
+            }
+            .xd-zz-v237-curtain-enter {
+                animation:xd-zz-v237-curtain-in .74s ease-in-out both!important;
+            }
+            .xd-zz-v237-curtain-exit {
+                animation:xd-zz-v237-curtain-out .58s ease-in-out both!important;
+            }
+            @keyframes xd-zz-v237-curtain-in {
+                0%,100% {opacity:0;}
+                42% {opacity:.50;}
+            }
+            @keyframes xd-zz-v237-curtain-out {
+                0%,100% {opacity:0;}
+                48% {opacity:.34;}
+            }
+            @media(prefers-reduced-motion:reduce) {
+                .player.xd-zz-v215-masked .xd-zz-v215-veil.xd-zz-v237-entering,
+                .xd-zz-v237-leavehost.player,
+                .xd-zz-v237-curtain {animation:none!important;}
+                .xd-zz-v237-leavehost,.xd-zz-v237-curtain {opacity:0!important;}
+            }
+
+            .player.xd-zz-v215-masked.xd-zz-v2-proto-selected,
+            .xd-zz-v215-masked.player.xd-zz-v2-proto-selected {
+                outline:3px solid #9be9ff!important; outline-offset:1px!important;
+            }
+        `;
+        document.head.appendChild(style);
+    };
+    Z.v215SyncImagery = player => {
+        if (typeof document === "undefined") return;
+        if (!Z.local(player) || !Z.blind(player) || !Z.alive(player) || Z.ended) {
+            Z.v215StopImagery();
+            return;
+        }
+        if (!Z.v215ImageryActive) {
+            Z.v215BeginImagery(player);
+            return;
+        }
+        Z.v215EnsureStyle();
+        Z.v283InstallDreamIntroGuard?.();
+        const others = game.players.filter(p => p && p !== player);
+        const current = new Set(others);
+        for (const [other, record] of Z.v215Overlays) {
+            if (current.has(other) && record.node === other && record.overlay?.isConnected) continue;
+            try { record.node?.classList?.remove("xd-zz-v215-masked"); } catch (e) {}
+            try { record.overlay?.remove(); } catch (e) {}
+            try {
+                if (record.originalAriaLabel === null) record.node?.removeAttribute?.("aria-label");
+                else record.node?.setAttribute?.("aria-label", record.originalAriaLabel);
+            } catch (e) {}
+            if (record.node && "originalNoIntro" in record) {
+                if (record.originalNoIntro === undefined) delete record.node._nointro;
+                else record.node._nointro = record.originalNoIntro;
+            }
+            Z.v215Overlays.delete(other);
+        }
+        for (const other of others) {
+            const image = Z.v215GetImagery(other);
+            if (Z.v215Overlays.get(other)?.overlay?.isConnected) continue;
+            if (!other?.appendChild || !other?.classList) continue;
+            const originalAriaLabel = other.getAttribute?.("aria-label") ?? null;
+            const veil = document.createElement("div");
+            veil.className = "xd-zz-v215-veil xd-zz-v237-entering";
+            veil.style.setProperty("animation-delay", Math.min(Z.v215Overlays.size * 45, 315) + "ms");
+            veil.setAttribute("aria-label", "角色形象·" + image.name);
+            veil.style.setProperty("--zz-ink", image.hue);
+            const art = Z.v219MakeArt(veil, image);
+            const glyph = document.createElement("span");
+            glyph.className = "xd-zz-v215-glyph";
+            glyph.textContent = image.glyph;
+            const name = document.createElement("span");
+            name.className = "xd-zz-v215-name";
+            name.textContent = image.name;
+            const edit = document.createElement("button");
+            edit.type = "button";
+            edit.className = "xd-zz-v216-edit";
+            edit.textContent = "换";
+            edit.setAttribute("aria-label", "更换角色形象");
+            // “换”按钮独立拦截，不影响整张武将牌原生的点击选目标。
+            for (const name of ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend"]) {
+                edit.addEventListener(name, e => { e.stopPropagation(); });
+            }
+            edit.addEventListener("click", e => {
+                e.preventDefault();
+                e.stopPropagation();
+                Z.v216OpenChooser(other);
+            });
+            veil.append(art, glyph, name, edit);
+            other.classList.add("xd-zz-v215-masked");
+            other.setAttribute?.("aria-label", "角色形象·" + image.name);
+            // v309：右键/长按/悬停介绍会列出真实武将、装备与判定牌；遮住期间不弹。
+            const originalNoIntro = other._nointro;
+            other._nointro = true;
+            other.appendChild(veil);
+            Z.v215Overlays.set(other, { node: other, overlay: veil, originalAriaLabel, originalNoIntro, art, glyph, name, edit });
+
+        }
+        // 死者不再留在 game.players；另外生成固定外壳，继续保留其死前最后角色形象。
+        Z.v282SyncDeadDreamShells?.(player);
+        Z.v216RefreshOverlayNames();
+    };
+
     Z.refresh = () => {
         if (typeof document === "undefined") return;
         if (Z.v2proto) {
@@ -413,6 +3105,12 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
                 if (Z.root.hidePopover && Z.root.matches(":popover-open")) Z.root.hidePopover();
             }
             Z.v27SyncNativeHandMask?.(game.me);
+            Z.v215SyncImagery?.(game.me);
+            Z.v245SyncOtherSkillButtons?.();
+            Z.v226SyncDreamReport?.();
+            Z.v296SyncWuxieDialogs?.();
+            Z.v241SyncDreamWallpaper?.();
+            Z.v233SyncOwnButterfly?.();
             if (Z.blind(game.me)) Z.v272StartBackTracking?.();
             if ((!Z.local(game.me) || !Z.blind(game.me)) && Z.v2DestroyAll) {
                 Z.v2DestroyAll("eyes-open");
@@ -422,14 +3120,17 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         Z.mount();
         const blind = !Z.ended && Z.local(game.me) && Z.blind(game.me) && Z.alive(game.me);
         Z.syncSurface(blind);
+        Z.v233SyncOwnButterfly?.();
         // 活跃选择保留牌/座位按钮及已选状态，窗口缩放只改变百分比布局。
         if (blind && !Z.modal && !Z.interaction) Z.drawScene();
     };
 
     Z.eyes = (player, count) => {
-        if (!Z.blind(player)) {
+        const wasBlind = Z.blind(player);
+        if (!wasBlind) {
             if (player === game.me) Z.captureLayout();
             Z.hand(player);
+            Z.v301EquipOrder?.(player);
             player._xd_zz_judgeCount =
                 player.getCards("j").length;
         }
@@ -438,7 +3139,11 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             Math.max(0, Math.min(2, count));
 
         player.markSkill("xd_mei");
+        // 只在真正开始新一段双眼闭合时重新抽签；单眼变化不提前刷新意象。
+        if (Z.local(player) && !wasBlind && Z.blind(player)) Z.v215BeginImagery?.(player);
+        else if (Z.local(player) && wasBlind && !Z.blind(player)) Z.v215StopImagery?.();
         Z.refresh();
+        Z.v243SyncAwakeButtons?.(player);
     };
 
     // 自建窗口不依据合法性禁用候选。
@@ -611,6 +3316,18 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         return list;
     };
 
+    // V2.7.28: 【醒】仅在至少闭着一只眼时可以新发动。
+    // 例外只允许【醒】已经真实发动、先睁眼后正在完成的*同一个*原生选牌事件；
+    // 旧事件残留的 pending 不得让闭眼数为 0 的庄周再次发动【醒】。
+    Z.v228PendingAwake = (player, event) => {
+        const pending = player?._xd_zz_pendingAwake;
+        return !!(event && pending?.request === event && !pending.cancelled &&
+            event.skill === "xd_xing" && pending.frame?.mode === "awake" &&
+            !pending.frame.finished && Z.allowed(player, "awake"));
+    };
+    Z.v228CanAwake = (player, event) =>
+        Z.state(player).closed > 0 || Z.v228PendingAwake(player, event);
+
     Z.allowed = (player, mode) => {
         if (mode === "normal") return true;
 
@@ -641,6 +3358,10 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
 
         if (mode === "awake") {
             Z.eyes(player, 0);
+            // 【醒】点击即已消耗。原生 chooseToUse 还需要暂时保留 skill
+            // 以完成选牌，但技能栏里的按钮必须从这一刻起消失。
+            Z.v243GuardNativeSkillClicks?.(player);
+            Z.v243SyncAwakeButtons?.(player);
         }
 
         player.logSkill(
@@ -650,12 +3371,39 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         return frame;
     };
 
+    // v301：“下次仅能发动【梦】/【醒】”期间，庄周身上其他武将技能（含【寐】、获得的技能）一律不能发动，
+    // 直到对应的【梦】/【醒】结算完成。用本体 skillBlocker 实现：不移除技能、不触发 onremove，
+    // 装备技能与 charlotte 系统技能不受影响；【梦】【醒】本身仍由 Z.allowed 管。
+    Z.v301LockExempt = ["xd_meng", "xd_xing", "xd_xing_empty", "xd_zhuangzhou_engine"];
+    Z.v301SyncLockBlocker = player => {
+        if (!player?.storage) return;
+        const id = "xd_zz_lock_blocker";
+        const list = player.storage.skill_blocker;
+        const has = Array.isArray(list) && list.includes(id);
+        if (Z.state(player).lock && !has) player.addSkillBlocker?.(id);
+        else if (!Z.state(player).lock && has) player.removeSkillBlocker?.(id);
+        try { _status.event?.clearStepCache?.(); } catch (e) {}
+    };
+
     Z.finish = frame => {
         if (!frame || frame.finished) return;
         frame.finished = true;
+        // 【醒】结算完毕时解除只在本次原生选牌期间启用的取消监听，
+        // 避免把其它武将或其它询问的取消事件带进来。
+        Z.v229DisarmCancel?.(frame);
 
         const player = frame.player;
         const state = Z.state(player);
+        // 【醒】的先睁眼效果已发生，哪怕玩家取消 / 没有合法可用牌，本次发动也已消耗。
+        // 同一 chooseToUse 对象可能在本体 UI 里复用；失败后必须连它的旧技能选择一起撤销。
+        if (player._xd_zz_pendingAwake?.frame === frame) {
+            const pending = player._xd_zz_pendingAwake;
+            if (frame.mode === "awake" && frame.nextLock === "dream") {
+                pending.cancelled = true;
+                if (pending.request?.skill === "xd_xing") pending.request.skill = null;
+            }
+            delete player._xd_zz_pendingAwake;
+        }
 
         if (frame.nextLock) {
             state.lock = frame.nextLock;
@@ -667,19 +3415,395 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             state.lock = null;
             state.lockRevision++;
         }
+        Z.v301SyncLockBlocker(player);
 
         player.markSkill("xd_mei");
         Z.refresh();
+        Z.v243GuardNativeSkillClicks?.(player);
+        Z.v243SyncAwakeButtons?.(player);
+    };
+
+    // V2.7.31：在同一个 chooseToUse 事件里，点【醒】后睁眼，但没有可以合法使用的牌时，
+    // 玩家点“取消”会退出本次技能选牌。V2.7.28 只比对 request 身份，此时本体可能复用
+    // 同一个 chooseToUse，导致 pending 仍旧为真，出现零只闭眼却能再点【醒】的假象。
+    // 只在该次【醒】选牌的 checkEnd 完成以后临时接管本体取消入口，不改其它选择流程。
+    Z.v230RefreshNativeChoice = player => {
+        // Only after native cancel has returned: re-evaluate stale skill buttons against the
+        // now-open eyes and the committed “next only 梦” lock. Does not refund chooseToUse.
+        if (!Z.local(player) || typeof game.check !== "function") return;
+        try {
+            const active = get.event?.();
+            const request = active?.name === "chooseToUse" ? active : _status.event;
+            if (request?.player === player && request.name === "chooseToUse") game.check();
+        } catch (e) {}
+        Z.v243GuardNativeSkillClicks?.(player);
+        Z.v243SyncAwakeButtons?.(player);
+    };
+
+    // 睁眼后本体仍需保留同一次 chooseToUse 的 skill 字段，才能完成选牌。
+    // 但本体可能沿用之前渲染的技能按钮；不让那个旧按钮成为第二次发动入口。
+    // 只检查本体技能按钮所在的小容器，不扫描或重排整张游戏桌面。
+    Z.v243HiddenAwakeButtons = new Map();
+    Z.v243SyncAwakeButtons = player => {
+        if (!Z.local(player) || typeof document === "undefined") return;
+        const hidden = Z.v243HiddenAwakeButtons;
+        if (Z.state(player).closed > 0) {
+            for (const [node, old] of hidden) {
+                if (old.value) node.style.setProperty("display", old.value, old.priority);
+                else node.style.removeProperty("display");
+            }
+            hidden.clear();
+            return;
+        }
+        // 有些 UI 皮肤把技能入口移动到 control 而不是 skills*。
+        const roots = [ui.skills, ui.skills2, ui.skills3, ui.control,
+            document.getElementById?.("skills"),
+            document.getElementById?.("skills2"),
+            document.getElementById?.("skills3"),
+            document.getElementById?.("control")].filter(Boolean);
+        // 本体重新创建技能栏时，释放已经脱离 DOM 的旧节点，避免闭眼很久后积累引用。
+        for (const node of hidden.keys()) {
+            if (node.isConnected === false) hidden.delete(node);
+        }
+        const seen = new Set();
+        for (const root of roots) {
+            if (seen.has(root)) continue;
+            seen.add(root);
+            const nodes = [root, ...(root.children || []),
+                ...(root.querySelectorAll?.(".skill,[data-skill],[data-id]") || [])];
+            for (const node of nodes) {
+                const id = node.link || node.dataset?.skill || node.dataset?.id ||
+                    node.getAttribute?.("data-skill") || node.getAttribute?.("data-id");
+                const isAwake = id === "xd_xing" || id === "xd_xing_empty" ||
+                    // 少数 UI 仅在原生 skill 节点留下翻译后的技能名。
+                    (node.classList?.contains("skill") && node.textContent?.trim() === "醒");
+                if (!isAwake || !node.style || hidden.has(node)) continue;
+                hidden.set(node, {
+                    value: node.style.getPropertyValue("display"),
+                    priority: node.style.getPropertyPriority("display"),
+                });
+                node.style.setProperty("display", "none", "important");
+            }
+        }
+    };
+    Z.v243GuardNativeSkillClicks = player => {
+        if (!Z.local(player) || typeof ui.click?.skill !== "function") return;
+        // 已在【醒】原生选牌中时，不能再包裹 v229 的临时监听器。
+        // 否则结束时检测不到旧函数，导致取消/技能事件残留。
+        const pending = player._xd_zz_pendingAwake;
+        if (pending?.frame?._xd_zz_skillGuard?.wrapped === ui.click.skill) return;
+        if (ui.click.skill._xd_zz_v243AwakeGuard) return;
+        const original = ui.click.skill;
+        const wrapped = function (...args) {
+            const id = typeof args[0] === "string" ? args[0] :
+                (this?.link || this?.dataset?.skill || this?.dataset?.id ||
+                    args[0]?.currentTarget?.link || args[0]?.currentTarget?.dataset?.skill);
+            if (Z.local(player) && Z.state(player).closed === 0 &&
+                (id === "xd_xing" || id === "xd_xing_empty" ||
+                    (this?.classList?.contains("skill") && this.textContent?.trim() === "醒"))) {
+                return; // 即使本体留着旧按钮，也绝不再次提交已消耗的【醒】。
+            }
+            return original.apply(this, args);
+        };
+        wrapped._xd_zz_v243AwakeGuard = true;
+        ui.click.skill = wrapped;
+    };
+    // 保守方案：不伪造或冻结已经失去的原生技能（那需要重写原生技能发动器）。
+    // 仅在本地庄周双闭眼期间隐藏其它原生主动技能按钮，保留【梦】【醒】。
+    // 只检查原生技能小容器及其新建子节点，不扫描整桌或加入逐帧任务。
+    Z.v245MaskedOtherSkillButtons = new Map();
+    Z.v245OtherSkillObserver = null;
+    Z.v245ObservedSkillRoots = [];
+    Z.v245RestoreOtherSkillButtons = () => {
+        Z.v245OtherSkillObserver?.disconnect?.();
+        Z.v245OtherSkillObserver = null;
+        Z.v245ObservedSkillRoots = [];
+        for (const [node, old] of Z.v245MaskedOtherSkillButtons) {
+            try {
+                if (old.visibility) node.style.setProperty("visibility", old.visibility, old.visibilityPriority);
+                else node.style.removeProperty("visibility");
+                if (old.pointerEvents) node.style.setProperty("pointer-events", old.pointerEvents, old.pointerPriority);
+                else node.style.removeProperty("pointer-events");
+                if (old.ariaHidden === null) node.removeAttribute?.("aria-hidden");
+                else node.setAttribute?.("aria-hidden", old.ariaHidden);
+            } catch (e) {}
+        }
+        Z.v245MaskedOtherSkillButtons.clear();
+    };
+    Z.v245SyncOtherSkillButtons = () => {
+        const player = game.me;
+        if (typeof document === "undefined" || !player || !Z.local(player) ||
+            !Z.blind(player) || Z.ended) {
+            if (Z.v245MaskedOtherSkillButtons.size || Z.v245OtherSkillObserver)
+                Z.v245RestoreOtherSkillButtons();
+            return;
+        }
+        const roots = [...new Set([
+            ui.skills, ui.skills2, ui.skills3,
+            document.getElementById?.("skills"),
+            document.getElementById?.("skills2"),
+            document.getElementById?.("skills3"),
+            // 部分界面皮肤把技能按钮搬到 control 中；仅选择有技能身份的节点。
+            ui.control, document.getElementById?.("control"),
+        ].filter(Boolean))];
+        const keep = node => {
+            const id = node?.link || node?.dataset?.skill || node?.getAttribute?.("data-skill");
+            const label = node?.textContent?.trim();
+            return id === "xd_meng" || id === "xd_xing" || id === "xd_xing_empty" ||
+                (node?.classList?.contains("skill") && (label === "梦" || label === "醒"));
+        };
+        const nodes = new Set();
+        for (const root of roots) {
+            // 仅含技能语义的节点，绝不隐藏确认/取消、结束出牌等原生游戏控制。
+            if (root.classList?.contains("skill") || root.dataset?.skill) nodes.add(root);
+            for (const child of root.querySelectorAll?.(".skill,[data-skill]") || []) nodes.add(child);
+            // 本体的 skills 容器直接以 .link 表示技能时也识别它。
+            if (root === ui.skills || root === ui.skills2 || root === ui.skills3) {
+                for (const child of root.children || []) if (typeof child.link === "string") nodes.add(child);
+            }
+        }
+        for (const node of nodes) {
+            if (!node?.style || !node.isConnected) continue;
+            if (keep(node)) {
+                const old = Z.v245MaskedOtherSkillButtons.get(node);
+                if (old) {
+                    if (old.visibility) node.style.setProperty("visibility", old.visibility, old.visibilityPriority);
+                    else node.style.removeProperty("visibility");
+                    if (old.pointerEvents) node.style.setProperty("pointer-events", old.pointerEvents, old.pointerPriority);
+                    else node.style.removeProperty("pointer-events");
+                    if (old.ariaHidden === null) node.removeAttribute?.("aria-hidden");
+                    else node.setAttribute?.("aria-hidden", old.ariaHidden);
+                    Z.v245MaskedOtherSkillButtons.delete(node);
+                }
+                continue;
+            }
+            if (!Z.v245MaskedOtherSkillButtons.has(node)) {
+                Z.v245MaskedOtherSkillButtons.set(node, {
+                    visibility: node.style.getPropertyValue("visibility"),
+                    visibilityPriority: node.style.getPropertyPriority("visibility"),
+                    pointerEvents: node.style.getPropertyValue("pointer-events"),
+                    pointerPriority: node.style.getPropertyPriority("pointer-events"),
+                    ariaHidden: node.getAttribute?.("aria-hidden") ?? null,
+                });
+            }
+            if (node.style.getPropertyValue("visibility") !== "hidden")
+                node.style.setProperty("visibility", "hidden", "important");
+            if (node.style.getPropertyValue("pointer-events") !== "none")
+                node.style.setProperty("pointer-events", "none", "important");
+            node.setAttribute?.("aria-hidden", "true");
+        }
+        for (const node of Z.v245MaskedOtherSkillButtons.keys())
+            if (node.isConnected === false) Z.v245MaskedOtherSkillButtons.delete(node);
+        // 不监控 ui.control（原生出牌过程经常修改它），避免把技能遮蔽变成逐牌重活。
+        // 只监听技能小容器的直接子节点增删；checkEnd 负责其它原生重绘时序。
+        const observed = roots.filter(root => root !== ui.control &&
+            root !== document.getElementById?.("control"));
+        if (typeof MutationObserver === "function" &&
+            (observed.length !== Z.v245ObservedSkillRoots.length ||
+            observed.some((root, i) => root !== Z.v245ObservedSkillRoots[i]))) {
+            Z.v245OtherSkillObserver?.disconnect?.();
+            const observer = new MutationObserver(() => Z.v245SyncOtherSkillButtons());
+            for (const root of observed) observer.observe(root, { childList: true });
+            Z.v245OtherSkillObserver = observer;
+            Z.v245ObservedSkillRoots = observed;
+        }
+    };
+
+    Z.v229DisarmCancel = frame => {
+        const guard = frame?._xd_zz_cancelGuard;
+        if (guard) {
+            if (guard.click.cancel === guard.wrapped) guard.click.cancel = guard.original;
+            delete frame._xd_zz_cancelGuard;
+        }
+        const skillGuard = frame?._xd_zz_skillGuard;
+        if (skillGuard) {
+            if (skillGuard.click.skill === skillGuard.wrapped) skillGuard.click.skill = skillGuard.original;
+            delete frame._xd_zz_skillGuard;
+        }
+        const cardGuard = frame?._xd_zz_cardGuard;
+        if (cardGuard) {
+            if (cardGuard.replace.card === cardGuard.wrapped) {
+                if (cardGuard.original === undefined) delete cardGuard.replace.card;
+                else cardGuard.replace.card = cardGuard.original;
+            }
+            delete frame._xd_zz_cardGuard;
+        }
+    };
+    Z.v229ArmCancel = (player, pending) => {
+        const click = ui.click;
+        if (!pending || pending.cancelled || pending.frame?.finished || typeof click?.cancel !== "function") return;
+        if (pending.frame._xd_zz_cancelGuard?.wrapped === click.cancel) return;
+        // 上一次封装若被本体重设，这里沿用最新的原生 cancel，不叠加旧封装。
+        const original = click.cancel;
+        const wrapped = function (...args) {
+            // 只有已经先睁眼、尚未成功进入 onuse 的这次【醒】，取消才应执行“否则”。
+            // 在真正调用本体 cancel 前取消 pending 资格：若本体同步刷新技能栏，就不会再次显示【醒】。
+            const active = player._xd_zz_pendingAwake === pending &&
+                !pending.cancelled && !pending.frame.finished &&
+                Z.state(player).closed === 0; // native may already have cleared request.skill before cancel hook
+            if (!active) return original.apply(this, args);
+            // 牌一经选择即承诺使用，不允许玩家通过手动点原生“取消”撤回。
+            // 本体在成功提交时可能内部调用 cancel() 清理 UI；不拦截这种无点击事件的内部调用。
+            if (pending.frame.material && args[0]?.type === "click") return;
+            pending.cancelled = true;
+            if (click.cancel === wrapped) click.cancel = original;
+            try {
+                return original.apply(this, args);
+            } finally {
+                if (!pending.frame.finished) {
+                    Z.fail(pending.frame);
+                    Z.finish(pending.frame);
+                }
+                Z.v230RefreshNativeChoice(player);
+            }
+        };
+        click.cancel = wrapped;
+        pending.frame._xd_zz_cancelGuard = { click, original, wrapped };
+        // 睁眼后的本次 chooseToUse 可继续选牌，但不允许再次点击残留的【醒】入口。
+        if (!pending.frame._xd_zz_skillGuard && typeof click.skill === "function") {
+            const oldSkill = click.skill;
+            const skillGuard = function (...args) {
+                const chosen = typeof args[0] === "string" ? args[0] :
+                    (this?.link || this?.dataset?.skill);
+                if ((chosen === "xd_xing" || chosen === "xd_xing_empty") &&
+                    player._xd_zz_pendingAwake === pending && !pending.frame.finished &&
+                    Z.state(player).closed === 0) return;
+                return oldSkill.apply(this, args);
+            };
+            click.skill = skillGuard;
+            pending.frame._xd_zz_skillGuard = { click, original: oldSkill, wrapped: skillGuard };
+        }
+    };
+    Z.v229AwakeSelectionReady = event => {
+        if (Z.v294NativeValidation?.event === event) return;
+        const player = event?.player;
+        if (player !== game.me || !Z.local(player)) return;
+        const pending = player._xd_zz_pendingAwake;
+        if (pending?.request === event && !pending.cancelled &&
+            event.skill === "xd_xing" && !pending.frame?.finished && Z.state(player).closed === 0) {
+            Z.v229ArmCancel(player, pending);
+        }
+    };
+
+    // 【醒】已睁眼后，先用本体的真实合法性判断暗置牌，不能仅凭“手里有暗牌”
+    // 就让一个已经耗尽出杀次数的【杀】留在选牌界面里。
+    Z.v242HasUsableAwakeCard = event => {
+        const player = event?.player;
+        if (!player) return false;
+        return player.getCards("h").some(card => {
+            if (Z.shown(card, player)) return false;
+            try {
+                if (!Z.withSelection({ cards: [], targets: [] }, () =>
+                    !event.filterCard || event.filterCard(card, player, event))) return false;
+                return Z.withSelection({ cards: [card], targets: [] }, () => {
+                    const candidate = get.card?.() || card;
+                    return (!lib.filter.cardUsable || lib.filter.cardUsable(candidate, player, event)) &&
+                        (!lib.filter.cardEnabled || lib.filter.cardEnabled(candidate, player, event));
+                });
+            } catch (e) {
+                // 本体遇到特殊动态技能的合法性尚不可判定时，不擅自触发“否则”。
+                return true;
+            }
+        });
+    };
+
+    // 选中第一张合法暗牌后即锁定本次选择；真正的原生明置事件仍在
+    // useCardBefore 中发生（避免在 chooseToUse 的 game.check 内插入异步事件）。
+    Z.v242LockAwakeMaterial = (pending, material) => {
+        const frame = pending.frame;
+        if (frame.material || frame.finished) return;
+        frame.material = material;
+        const event = pending.request;
+        event.custom ||= {};
+        event.custom.replace ||= {};
+        const replace = event.custom.replace;
+        const original = replace.card;
+        const wrapped = function () {
+            // 不允许换牌或取消已选中的牌；选择目标与必要的“确定”仍由本体处理。
+            if (pending.frame.material && !pending.frame.finished) return;
+            if (typeof original === "function") return original.apply(this, arguments);
+        };
+        replace.card = wrapped;
+        frame._xd_zz_cardGuard = { replace, original, wrapped };
+    };
+
+    Z.v242AwakeAfterCheck = event => {
+        if (Z.v294NativeValidation?.event === event) return;
+        if (event?.name !== "chooseToUse" || event.skill !== "xd_xing") return;
+        const player = event.player;
+        const pending = player?._xd_zz_pendingAwake;
+        if (!pending || pending.request !== event || pending.cancelled ||
+            pending.frame.finished || Z.state(player).closed !== 0 || !Z.local(player)) return;
+
+        // 原生选牌被确认的那一刻锁定材料，不允许点击其他牌纠正。
+        if (!pending.frame.material) {
+            const chosen = ui.selected?.cards?.[0];
+            if (chosen && player.getCards("h").includes(chosen) && !Z.shown(chosen, player)) {
+                Z.v242LockAwakeMaterial(pending, chosen);
+            }
+        }
+
+        if (!pending.frame.material) {
+            // 优先相信原生 game.check 已显示的可选状态；只在确实无候选时自动“否则”。
+            if (player.getCards("h").some(card => !Z.shown(card, player) &&
+                card.classList?.contains("selectable"))) return;
+            if (pending._xd_zz_noLegalQueued || Z.v242HasUsableAwakeCard(event)) return;
+            pending._xd_zz_noLegalQueued = true;
+            // 不在 game.check 的调用栈内取消选牌，以免与本体同步刷新技能栏冲突。
+            Promise.resolve().then(() => {
+                if (player._xd_zz_pendingAwake !== pending || pending.frame.finished ||
+                    pending.frame.material || get.event?.() !== event) return;
+                Z.fail(pending.frame);
+                Z.finish(pending.frame);
+                // 【醒】不能替代本体正在询问的正常出牌；释放这次技能子选择。
+                if (typeof ui.click.cancel === "function") ui.click.cancel();
+                if (typeof event.goto === "function") event.goto(0);
+                Z.v230RefreshNativeChoice(player);
+            });
+            return;
+        }
+
+        // 普通固定目标数的牌沿用原生“选完即出”；变动目标数的牌（铁索、
+        // 方天画戟加目标等）必须由玩家自己按确定。不猜测额外指定目标的上限。
+        if (pending._xd_zz_autoOkQueued || get.name(pending.frame.material, player) === "tiesuo") return;
+        let range;
+        try { range = Z.v2GetRange(event.selectTarget); } catch (e) { return; }
+        if (!range || range[0] !== range[1] || range[0] < 0 ||
+            ui.selected.cards?.[0] !== pending.frame.material ||
+            ui.selected.targets?.length !== range[0] ||
+            (event.filterOk && !event.filterOk())) return;
+        pending._xd_zz_autoOkQueued = true;
+        Promise.resolve().then(() => {
+            pending._xd_zz_autoOkQueued = false;
+            if (player._xd_zz_pendingAwake !== pending || pending.frame.finished ||
+                get.event?.() !== event || event.skill !== "xd_xing" ||
+                ui.selected.cards?.[0] !== pending.frame.material ||
+                ui.selected.targets?.length !== range[0] ||
+                (event.filterOk && !event.filterOk())) return;
+            ui.click.ok();
+        });
     };
 
     Z.fail = frame => {
-        frame.nextLock = frame.mode === "dream"
-            ? "awake"
-            : "dream";
+        if (!frame || frame.finished) return;
+        const nextLock = frame.mode === "dream" ? "awake" : "dream";
+        frame.nextLock = nextLock;
+        // 技能原文的“否则”落实为下次发动限制。战报只展示实际限制，
+        // 同一次发动即使经多个事件检查也只记录一次。
+        if (!frame._xd_zz_lockLogged) {
+            frame._xd_zz_lockLogged = true;
+            game.log(frame.player, "下次仅能发动【" +
+                (nextLock === "dream" ? "梦" : "醒") + "】");
+        }
     };
 
     Z.expel = async (player, reason) => {
         if (!Z.alive(player)) return;
+        // 测试模式统一拦住违规退场，包含火攻和延后发现的错误牌。
+        if (Z.v274SafeTestMode) {
+            Z.v2Notice("TEST INVALID（仅提示，不判负）：" + reason);
+            return;
+        }
 
         game.log(
             player,
@@ -693,79 +3817,64 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         await event;
 
         Z.refresh();
+        Z.v243SyncAwakeButtons?.(player);
     };
 
     Z.recast = async token => {
         const player = token.player;
         const frame = token.frame;
-
         if (!frame || !Z.alive(player)) return;
 
-        const expected = () =>
-            player.getCards("h").filter(card =>
-                Z.shown(card, player) ===
-                    (frame.mode === "dream") &&
-                get.suit(card, player) ===
-                    token.fact.suit
-            );
-
-        // 前面的插入效果结算完后，按当前状态检查。
-        const required = expected();
-
-        if (
-            !required.length || required.some(card => !player.canRecast(card))
-        ) {
+        // 【梦】强制重铸同花色明置牌；【醒】强制重铸同花色暗置牌。
+        // 必须在本次使用的牌效与所有插入后续事件结算结束后，按最新手牌状态取快照。
+        const shown = frame.mode === "dream";
+        const matching = player.getCards("h").filter(card =>
+            Z.shown(card, player) === shown &&
+            get.suit(card, player) === token.fact.suit
+        );
+        if (!matching.length) {
+            Z.useTrace(token, "没有同花色的" + (shown ? "明置" : "暗置") + "手牌可重铸");
             Z.fail(frame);
             return;
         }
 
-        const hand = Z.hand(player);
-
-        let chosen;
-        if (!Z.local(player)) {
-            chosen = required.slice();
-        } else if (Z.v2proto && Z.blind(player)) {
-            // 闭眼重铸继续使用玩家自己的原生手牌 UI：所有手牌都允许选择，最后才核对是否恰好选中了全部应重铸牌。
-            const result = await player.chooseCard(
-                "h",
-                [1, player.countCards("h")],
-                "选择要重铸的手牌；取消则执行“否则”"
-            ).set("filterCard", () => true).set("ai", () => 0).forResult();
-            chosen = result.bool ? (result.cards || []).slice() : null;
-        } else {
-            chosen = await Z.pick(
-                player,
-                (Z.blind(player) ? "选择全部同花色重铸牌" :
-                    "重铸全部" + get.translation(token.fact.suit) +
-                    (frame.mode === "dream" ? "明置" : "暗置") + "手牌") +
-                    "；取消则执行“否则”",
-                hand,
-                (card, index) => Z.cardLabel(player, card, index)
-            );
-        }
-
-        if (chosen === null) {
-            Z.fail(frame);
+        if (frame.mode === "awake") {
+            // 【醒】按最新规则：逐张尝试，不能重铸的牌留在原处；至少真正重铸一张才算完成。
+            // 不能仅凭调用了 recast 就算成功，部分技能会令重铸事件失效。
+            let succeeded = 0;
+            for (const card of matching) {
+                if (!Z.alive(player)) return;
+                if (!player.getCards("h").includes(card) || Z.shown(card, player) ||
+                    get.suit(card, player) !== token.fact.suit) continue;
+                if (typeof player.canRecast === "function" && !player.canRecast(card)) continue;
+                // 例如【黠慧】的黑牌不能弃置；在进入原生重铸前过滤，避免整批中断。
+                if (lib.filter.cardDiscardable && !lib.filter.cardDiscardable(card, player, "recast")) continue;
+                try {
+                    await player.recast(card);
+                } catch (error) {
+                    // 个别牌的原生重铸事件失败时继续处理其余候选；最后只按真实成功数结算。
+                    Z.useTrace(token, "单张重铸未完成，继续处理其余同花色暗置牌");
+                    try { console.warn("[庄周·醒] 单张重铸失败", error); } catch (e) {}
+                    continue;
+                }
+                // 只有实体材料真实离开手牌，才视作这张牌的重铸已经完成。
+                if (!player.getCards("h").includes(card)) succeeded++;
+            }
+            Z.useTrace(token, "【醒】真实成功重铸" + succeeded + "/" + matching.length + "张");
+            if (!Z.alive(player)) return;
+            if (!succeeded) Z.fail(frame);
             return;
         }
 
-        const now = expected();
-        if (!now.length || now.some(card => !player.canRecast(card))) {
-            Z.fail(frame);
-            return;
-        }
-        if (chosen.length !== now.length || chosen.some(card => !now.includes(card))) {
-            await Z.expel(player, "重铸选择错误");
-            return;
-        }
-
-        await player.recast(chosen);
+        // 【梦】仍沿用实测成功的整批原生重铸逻辑，不顺手修改。
+        Z.useTrace(token, "自动重铸全部" + matching.length + "张同花色明置手牌");
+        await player.recast(matching);
+        Z.useTrace(token, "原生recast调用已返回");
 
         if (!Z.alive(player)) return;
-
         if (frame.mode === "dream") {
-            // 重铸失牌也可以插入【寐】。
-            // 已经完成的重铸不回滚。
+            // 沿用 V2.7.11 的原有顺序：重铸失牌仍可能插入【寐】。
+            // 若已经双闭眼，则按技能“否则”限制下次仅【醒】；否则闭上双眼。
             if (Z.state(player).closed === 2) {
                 Z.fail(frame);
             } else {
@@ -798,14 +3907,31 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
 
     Z.tokenOf = event => Z.tokens.get(event.card?.storage?.xd_zhuangzhou_token);
 
+    // V2.7.12 调试回归：只记录【梦】【醒】的实际用牌事件，不碰其它武将。
+    // 后续如果效果仍未结算，游戏日志足以分辨中断发生在 onuse、useCardBefore 或 useCard1 之前。
+    Z.useTrace = (token, stage) => {
+        if (!token) return;
+        token.trace ||= [];
+        token.trace.push(stage);
+        try { console.log("[庄周V2.7.12 用牌链]", token.id, token.mode, stage); } catch (e) {}
+        if (Z.v274SafeTestMode && Z.local(token.player)) {
+            try { game.log("【庄周2.7.12】", token.mode === "dream" ? "梦" : "醒", stage); } catch (e) {}
+        }
+    };
+
     Z.complete = async token => {
         if (!token || token.finished) return;
         token.finished = true;
         try {
             if (token.used) await Z.recast(token);
         } finally {
-            // 被 useCardBefore 取消并未真正用牌，不能消耗旧锁。
-            if (token.used) Z.finish(token.frame);
+            if (token.used) {
+                Z.finish(token.frame);
+            } else if (token.frame?.mode === "awake" && !token.frame.finished) {
+                // 【醒】已经先睁眼；若真正的 useCard 在进入 useCard1 前被取消，后半句未完成，应走“否则”。
+                Z.fail(token.frame);
+                Z.finish(token.frame);
+            }
             Z.tokens.delete(token.id);
             Z.refresh();
         }
@@ -822,6 +3948,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             });
             return;
         }
+        z.useTrace(event.token, "牌的使用事件已结束，开始处理后续重铸");
         await z.complete(event.token);
     };
     const originalUseCard = PP.useCard;
@@ -829,6 +3956,9 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         const next = originalUseCard.apply(this, args);
         const token = Z.tokenOf(next);
         if (token) {
+            // 只记录这次【梦】【醒】首次生成的原生用牌事件；供重复进入时诊断。
+            token.firstUseEvent ||= next;
+            Z.useTrace(token, "useCard事件已创建");
             next.insertAfter(Z.afterUse, { player: this, token, useEvent: next, forceDie: true });
         }
         return next;
@@ -984,18 +4114,11 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         );
     };
 
-    Z.canStartAwake = (request, player) => player.getCards("h").some(material => {
-        if (Z.shown(material, player) || !Z.cardOK(request, player, material)) return false;
-        const card = Z.fact(material, player);
-        const range = Z.targetSpec(request, card, player);
-        if (range[0] <= 0 || range[1] === -1) return Z.validate(request, player, material, []);
-        const search = (targets, rest) => {
-            if (targets.length >= range[0] && Z.validate(request, player, material, targets.slice())) return true;
-            if (targets.length >= range[0] || targets.length + rest.length < range[0]) return false;
-            return rest.some((target, index) => search(targets.concat(target), rest.filter((_, i) => i !== index)));
-        };
-        return search([], game.players.slice());
-    });
+    // V2.7.6：作者补充澄清【醒】有两个互斥入口。
+    // 仍有暗置手牌时：先睁眼，再必须选 1 张暗置牌明置并使用；不能空选跳过。
+    // 已无任何暗置手牌时：仍可直接发动【醒】，不要求材料，也不经过“确定”按钮；睁眼后因后续无法完成而走“否则”。
+    Z.hasAwakeMaterial = player =>
+        player.getCards("h").some(card => !Z.shown(card, player));
 
     // 牌与目标在同一窗口中提交；提交之前均可修改，双眼闭合时不按牌面筛选或提示。
     Z.chooseAction = (request, mode, committed) => {
@@ -1331,13 +4454,8 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             }
             let frame = null;
             if (mode === "awake") {
-                // 先确认确实能完成前半句，避免没有可用暗牌也能免费睁眼。
-                if (!Z.canStartAwake(request, player)) {
-                    await Z.choose("当前不能完成【醒】的用牌", [true], ["返回"], false);
-                    if (Z.blind(player)) return Z.blindRequest(request);
-                    continue;
-                }
-                if (!await Z.yes("发动【醒】并睁开双眼？睁眼后须完成一次明置用牌。")) {
+                // 作者纠正：发动【醒】时先无条件睁开双眼；有没有牌可明置/可使用，只能在睁眼之后判断。
+                if (!await Z.yes("发动【醒】并睁开双眼？睁眼后再选择要明置并使用的牌。")) {
                     if (Z.blind(player)) return Z.blindRequest(request);
                     continue;
                 }
@@ -1358,8 +4476,19 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
                 }
                 await Z.choose("这次选择不符合用牌要求，请重新选择", [true], ["返回选择"], false);
             }
-            if (!selection) continue;
+            if (!selection) {
+                // 【醒】已经先睁眼；此后若无法/不再完成明置用牌，就按技能“否则”结算，不能把睁眼回滚。
+                if (frame && !frame.finished) {
+                    Z.fail(frame);
+                    Z.finish(frame);
+                }
+                continue;
+            }
             await Z.useSelection(request, selection, mode, frame);
+            if (frame && !frame.finished && request.result?.bool === false) {
+                Z.fail(frame);
+                Z.finish(frame);
+            }
             return;
         }
     };
@@ -1374,7 +4503,12 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     };
     Z.v2Notice = text => {
         Z.v2Debug(text);
-        try { game.log("【庄周V2测试】", text); } catch (e) {}
+        if (!Z.v274SafeTestMode) {
+            // 正式版：调试用的合规回执不写进战报，其余提示去掉“测试”字样。
+            if (/^VALID/.test(text)) return;
+            if (/^UNSUPPORTED/.test(text)) text = "这次闭眼操作无法判断是否合规，不处罚也不提交；请换一张牌或取消。";
+        }
+        try { game.log(Z.v274SafeTestMode ? "【庄周V2测试】" : "【庄周】", text); } catch (e) {}
     };
     Z.v2EnsureStyle = () => {
         if (typeof document === "undefined" || document.getElementById("xd-zz-v2-proto-style")) return;
@@ -1385,8 +4519,18 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             /* 测试版：真实手牌仍负责点击，但闭眼时正面本体彻底透明；原生 fake-card 牌背负责视觉。
                这样手牌重排时即使覆盖层慢一帧，也不会泄漏刚补位牌的正面。 */
             .xd-zz-native-under-mask { opacity:0 !important; }
-            .xd-zz-v2-proto-active::after { content:"V2.7.4 安全回归测试"; position:absolute; left:50%; top:8px; transform:translateX(-50%); z-index:20; pointer-events:none; padding:4px 9px; border-radius:10px; background:rgba(0,0,0,.72); color:white; font-size:13px; }
-            .xd-zz-v2-proto-self-selected::after { content:"已选自己"; position:absolute; right:2px; bottom:2px; z-index:9; padding:2px 4px; border-radius:4px; font-size:10px; line-height:1.1; background:rgba(0,0,0,.65); color:currentColor; pointer-events:none; }
+            ${Z.v274SafeTestMode ? '.xd-zz-v2-proto-active::after { content:"V2.7.16 意象手动标记测试"; position:absolute; left:50%; top:8px; transform:translateX(-50%); z-index:20; pointer-events:none; padding:4px 9px; border-radius:10px; background:rgba(0,0,0,.72); color:white; font-size:13px; }' : ''}
+            /* 自己在庄周闭眼选择中仍是一名可以点选的目标；只强化操作反馈，不透露是否合法。 */
+            .player.xd-zz-v2-proto-self-selected,
+            .xd-zz-v2-proto-self-selected.player {
+                outline: 4px solid #7ef4ff !important;
+                outline-offset: -3px !important;
+                box-shadow: 0 0 0 3px rgba(1,32,45,.95) inset, 0 0 16px 5px rgba(90,236,255,.96) !important;
+            }
+            .xd-zz-v2-proto-self-selected.player .avatar,
+            .xd-zz-v2-proto-self-selected.player .avatar2 {
+                box-shadow: 0 0 0 3px #7ef4ff, 0 0 14px 4px rgba(90,236,255,.9) !important;
+            }
         `;
         document.head.appendChild(style);
     };
@@ -1396,7 +4540,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     // fake card 仅负责视觉，pointer-events:none；真正的点击仍落在下面那张真实手牌上。
     // V2.7.4 仅用于实机回归：正式版必须关闭。
     // INVALID 仍会被判定出来，但测试时不直接把玩家踢出游戏，便于连续验证。
-    Z.v274SafeTestMode = true;
+    Z.v274SafeTestMode = ZHUANGZHOU_TEST_SCAFFOLD;
     Z.v274TestPeek = false;
     Z.v274TestPeekControl = null;
     Z.v274CloseTestPeekControl = () => {
@@ -1409,7 +4553,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         Z.v274TestPeek = false;
     };
     Z.v274RefreshTestPeekControl = player => {
-        if (!(Z.v2proto && player && Z.local(player) && Z.blind(player) && Z.alive(player))) {
+        if (!(Z.v274SafeTestMode && Z.v2proto && player && Z.local(player) && Z.blind(player) && Z.alive(player))) {
             Z.v274CloseTestPeekControl();
             return;
         }
@@ -1477,9 +4621,14 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         if (!card?.getBoundingClientRect || !fake?.style) return;
         const rect = card.getBoundingClientRect();
         if (!rect.width || !rect.height) {
-            fake.style.display = "none";
+            if (fake.style.display !== "none") fake.style.display = "none";
+            fake._xd_zz_lastRect = null;
             return;
         }
+        const prev = fake._xd_zz_lastRect;
+        if (prev && prev[0] === rect.left && prev[1] === rect.top &&
+            prev[2] === rect.width && prev[3] === rect.height && fake.style.display !== "none") return;
+        fake._xd_zz_lastRect = [rect.left, rect.top, rect.width, rect.height];
         fake.style.display = "";
         fake.style.position = "fixed";
         fake.style.left = rect.left + "px";
@@ -1527,6 +4676,17 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             return;
         }
         const hand = new Set(player.getCards?.("h") || []);
+        // v308：木牛流马里的牌（特殊区，但本体显示在手牌栏里）闭眼时同样盖牌背。
+        for (const card of player.getCards?.("s") || []) {
+            const parent = card?.parentNode;
+            if (parent && (parent === player.node?.handcards1 || parent === player.node?.handcards2)) hand.add(card);
+        }
+        // v305：闭眼手选弃牌且可弃装备时，本人装备区的真实牌也盖原生牌背。
+        const equipPick = player === game.me && !!Z.v305EquipPickActive?.(player);
+        const equips = equipPick ? player.getCards?.("e") || [] : [];
+        for (const card of equips) hand.add(card);
+        // 询问结束后先收起装备区，再撤牌背；放开装备区则要等牌背盖好之后（见下方）。
+        if (!equipPick && player === game.me) Z.v305SyncEquipPickClass?.();
         for (const card of Array.from(Z.v27NativeMaskedCards.keys())) {
             if (!hand.has(card)) Z.v27UnmaskNativeCard(card);
         }
@@ -1541,7 +4701,12 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             Z.v27MaskNativeCard(card);
             const entry = Z.v27NativeMaskedCards.get(card);
             if (entry?.fake) Z.v272SyncBackGeometry(card, entry.fake);
+            // 装备牌选中时不会像手牌那样上移，真实牌又是透明的，所以在牌背上标出选中。
+            if (equips.includes(card) && entry?.fake) {
+                entry.fake.classList.toggle("xd-zz-v2-proto-selected", !!card.classList?.contains("selected"));
+            }
         }
+        if (equipPick) Z.v305SyncEquipPickClass?.();
     };
     Z.v272StartBackTracking = () => {
         if (Z.v272Tracking) return;
@@ -1552,11 +4717,16 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             const active = Z.v2proto && player && Z.local(player) && Z.blind(player) && Z.alive(player) && !Z.ended;
             if (!active) {
                 Z.v272Tracking = false;
+                Z.v301TeardownGuanshi?.();
                 Z.v27UnmaskAllNativeCards();
+                Z.v226StopDreamReport?.();
                 Z.v274CloseTestPeekControl();
                 return;
             }
             Z.v27SyncNativeHandMask(player);
+            Z.v227SyncOwnEquipMask?.();
+            Z.v215SyncImagery?.(player);
+            Z.v241SyncDreamWallpaper?.();
             requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
@@ -1636,8 +4806,159 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         return { kind: "responseUse" };
     };
 
-    // V2.7 Validator：不调用完整 game.check()，只事务式重放当前单实体牌的真实合法性。
-    // 目标数量/自动目标/距离/filterTarget/filterOk 都只在按下确定后读取。
+    // 原生检查会维护选择标记、缓存和确认控件；这里只在提交后同步借用它，
+    // 不执行出牌、不运行 checkEnd 的显示/自动确认钩子，结束后恢复闭眼界面。
+    Z.v294ValidateNative = (session, material, intendedTargets) => {
+        const event = session.event;
+        const player = event.player;
+        if (Z.v294NativeValidation) return { status: "UNSUPPORTED", stage: "NATIVE_CHECK_REENTRANT" };
+        if (typeof game.check !== "function" || typeof game.Check?.card !== "function" ||
+            typeof game.callHook !== "function" || !material.classList?.contains) {
+            return { status: "UNSUPPORTED", stage: "NATIVE_CHECK_UNAVAILABLE" };
+        }
+        if (event.filterButton) return { status: "UNSUPPORTED", stage: "NATIVE_BUTTON_SELECTION" };
+        if (intendedTargets.length !== new Set(intendedTargets).size) {
+            return { status: "INVALID", stage: "DUPLICATE_TARGET" };
+        }
+        if (event.name === "chooseToRespond" && intendedTargets.length) {
+            return { status: "INVALID", stage: "RESPOND_UNEXPECTED_TARGET" };
+        }
+
+        const groups = {
+            button: event.dialog?.buttons || [],
+            card: player.getCards(event.position || "h"),
+            target: [...game.players, ...(game.dead || [])],
+        };
+        const nodes = new Set([...groups.button, ...groups.card, ...groups.target, ui.arena, player.node?.equips]);
+        for (const target of groups.target) {
+            nodes.add(target.instance);
+            nodes.add(target.node?.action);
+        }
+        const marks = ["selected", "selectable", "selecting", "tempnoe", "popequip", "thunder"];
+        const nodeState = [...nodes].filter(node => node?.classList).map(node => ({
+            node,
+            className: node.getAttribute?.("class"),
+            marks: marks.map(name => node.classList.contains(name)),
+            cssText: typeof node.style?.cssText === "string" ? node.style.cssText : undefined,
+            actionHTML: groups.target.some(target => target.node?.action === node) ? node.innerHTML : undefined,
+        }));
+        const fields = [];
+        const saveField = (object, key) => {
+            fields.push({ object, key, descriptor: Object.getOwnPropertyDescriptor(object, key) });
+        };
+        for (const key of ["_buttonChoice", "_cardChoice", "_targetChoice", "_skillChoice", "_checked",
+            "targetprompt2", "cardChooseAll", "buttonChooseAll"]) saveField(event, key);
+        for (const key of ["noconfirm", "multitarget", "imchoosing"]) saveField(_status, key);
+        for (const key of ["auto_confirm", "cardtempname"]) saveField(lib.config, key);
+        for (const key of ["ok", "cancel"]) saveField(ui.click, key);
+        for (const key of ["callHook", "uncheck"]) saveField(game, key);
+        saveField(game.Check, "confirm");
+        saveField(Z, "v294NativeValidation");
+
+        try {
+            Z.v294NativeValidation = { event, session };
+            for (const key of ["_buttonChoice", "_cardChoice", "_targetChoice", "_skillChoice"]) delete event[key];
+            event.targetprompt2 = [];
+            event.cardChooseAll = event.buttonChooseAll = undefined;
+            _status.noconfirm = true;
+            lib.config.auto_confirm = false;
+            lib.config.cardtempname = "off";
+            ui.click.ok = ui.click.cancel = () => {};
+            game.Check.confirm = () => {};
+            const nativeCallHook = game.callHook;
+            game.callHook = function (name, ...args) {
+                // checkEnd 在原生布尔判定完成后才运行；这里跳过其 UI 刷新和自动出牌。
+                if (name === "checkEnd") return;
+                return nativeCallHook.call(this, name, ...args);
+            };
+            game.uncheck = (...types) => {
+                // 检查失败时仍清空后续选择；不拆除桌面的提示节点、拖拽线和控件。
+                if (!types.length) types = ["button", "card", "target"];
+                for (const type of types) {
+                    if (!groups[type]) throw new Error("Unsupported native uncheck type");
+                    ui.selected[type + "s"].length = 0;
+                    for (const node of groups[type]) node.classList?.remove("selected", "selectable");
+                }
+            };
+            for (const type of ["button", "card", "target"]) {
+                ui.selected[type + "s"].length = 0;
+                for (const node of groups[type]) node.classList?.remove("selected", "selectable");
+            }
+
+            const nativeCheck = () => {
+                if (get.event() !== event) throw new Error("Native check event changed");
+                const ok = game.check(event);
+                if (typeof ok !== "boolean" || get.event() !== event) throw new Error("Native check did not return a stable verdict");
+                return ok;
+            };
+            // 先让完整原生检查生成可点击项，再重放点击；不能把非法牌预先标为 selected。
+            nativeCheck();
+            if (!material.classList.contains("selectable")) return { status: "INVALID", stage: "NATIVE_CARD" };
+            ui.selected.cards.push(material);
+            material.classList.add("selected");
+            const check = () => {
+                const ok = nativeCheck();
+                if (ui.selected.cards.length !== 1 || ui.selected.cards[0] !== material || ui.selected.buttons.length) {
+                    throw new Error("Native check changed the single-card selection");
+                }
+                return ok;
+            };
+            let ok = check();
+            if (!get.card()) return { status: "UNSUPPORTED", stage: "NO_CANONICAL_CARD" };
+            if (event.name === "chooseToRespond") {
+                if (!ok) return { status: "INVALID", stage: "NATIVE_CHECK" };
+                if (ui.selected.targets.length) return { status: "UNSUPPORTED", stage: "NATIVE_RESPOND_TARGETS" };
+                return { status: "VALID", plan: { cards: [material], targets: [], buttons: [] } };
+            }
+
+            let targetRange = Z.v2GetRange(event.selectTarget);
+            if (targetRange[1] >= 0) {
+                if (targetRange[0] === 0 && targetRange[1] === 0 && intendedTargets.length) {
+                    return { status: "INVALID", stage: "UNEXPECTED_TARGET", targetRange };
+                }
+                for (const target of intendedTargets) {
+                    // 原生先计算下一个可点击目标；按玩家的实际点击顺序逐个重放。
+                    if (!target?.classList?.contains("selectable") || ui.selected.targets.includes(target)) {
+                        return { status: "INVALID", stage: "NATIVE_TARGET", targetRange };
+                    }
+                    ui.selected.targets.push(target);
+                    target.classList.add("selected");
+                    ok = check();
+                    targetRange = Z.v2GetRange(event.selectTarget);
+                    if (targetRange[1] < 0) break;
+                }
+            }
+            if (targetRange[1] < 0 && intendedTargets.length &&
+                (intendedTargets.length !== ui.selected.targets.length ||
+                    intendedTargets.some(target => !ui.selected.targets.includes(target)))) {
+                return { status: "INVALID", stage: "AUTO_TARGET_MISMATCH", targetRange };
+            }
+            if (!ok) return { status: "INVALID", stage: "NATIVE_CHECK", targetRange };
+            return { status: "VALID", targetRange,
+                plan: { cards: [material], targets: ui.selected.targets.slice(), buttons: [] } };
+        } catch (error) {
+            Z.v2Debug("Native validator exception", error);
+            return { status: "UNSUPPORTED", stage: "NATIVE_CHECK_EXCEPTION", error };
+        } finally {
+            for (let index = fields.length - 1; index >= 0; index--) {
+                const { object, key, descriptor } = fields[index];
+                if (descriptor) Object.defineProperty(object, key, descriptor);
+                else delete object[key];
+            }
+            for (const { node, className, marks: savedMarks, cssText, actionHTML } of nodeState) {
+                if (className !== undefined && node.setAttribute) {
+                    if (className === null) node.removeAttribute?.("class");
+                    else node.setAttribute("class", className);
+                } else {
+                    marks.forEach((name, index) => node.classList[savedMarks[index] ? "add" : "remove"](name));
+                }
+                if (cssText !== undefined) node.style.cssText = cssText;
+                if (actionHTML !== undefined) node.innerHTML = actionHTML;
+            }
+        }
+    };
+
+    // 只保留庄周的前置条件和零目标铁索重铸；一般用牌/响应交给原生检查。
     Z.v2ValidateSingle = session => {
         const event = session.event;
         const player = event.player;
@@ -1645,137 +4966,37 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         const intendedTargets = session.intent.targets.slice();
         if (!material) return { status: "INVALID", stage: "STRUCTURE_NO_CARD" };
         if (get.event() !== event) return { status: "UNSUPPORTED", stage: "STALE_EVENT" };
-
         const old = Z.v2SnapshotSelected();
         session.validating = true;
         try {
             Z.v2ReplaceArray(ui.selected.buttons, []);
             Z.v2ReplaceArray(ui.selected.cards, []);
             Z.v2ReplaceArray(ui.selected.targets, []);
-
-            const source = player.getCards(event.position || "h");
-            if (!source.includes(material)) return { status: "INVALID", stage: "CARD_SOURCE" };
+            if (!player.getCards(event.position || "h").includes(material)) return { status: "INVALID", stage: "CARD_SOURCE" };
             if (player.isOut()) return { status: "INVALID", stage: "PLAYER_OUT" };
-
-            // 【梦】/【醒】本身的前置条件也属于“睁眼时能不能这样做”的真实规则。
             if (session.profile?.mode) {
                 const mode = session.profile.mode;
                 if (!Z.allowed(player, mode)) return { status: "INVALID", stage: "MODE_LOCKED" };
-                if (mode === "awake" && Z.state(player).closed <= 0) {
-                    return { status: "INVALID", stage: "AWAKE_WITHOUT_CLOSED_EYE" };
+                if (mode === "awake" && !Z.v228CanAwake(player, event)) return { status: "INVALID", stage: "AWAKE_WITHOUT_CLOSED_EYE" };
+                if (Z.shown(material, player) !== (mode === "dream")) return { status: "INVALID", stage: "MODE_CARD_VISIBILITY" };
+            }
+            if (event.name === "chooseToUse" && event.type === "phase" && !event.skill &&
+                !session.profile?.mode && intendedTargets.length === 0 && get.name(material, player) === "tiesuo") {
+                if (typeof player.canRecast !== "function" || !player.canRecast(material)) {
+                    return { status: "INVALID", stage: "TIESUO_RECAST_NOT_ALLOWED" };
                 }
-                if (Z.shown(material, player) !== (mode === "dream")) {
-                    return { status: "INVALID", stage: "MODE_CARD_VISIBILITY" };
+                ui.selected.cards.push(material);
+                const cardRange = Z.v2GetRange(event.selectCard);
+                if (!Z.v2CountInRange(ui.selected.cards.length, cardRange)) {
+                    return { status: "INVALID", stage: "TIESUO_RECAST_CARD_RANGE", cardRange };
                 }
-            }
-
-            // 按本体真正的卡牌过滤器验牌；闭眼 UI 不预先展示这个结果。
-            if (event.name === "chooseToRespond" &&
-                lib.filter.cardRespondable && !lib.filter.cardRespondable(material, player, event)) {
-                return { status: "INVALID", stage: "CARD_RESPONDABLE" };
-            }
-            if (typeof event.filterCard !== "function" || !event.filterCard(material, player, event)) {
-                return { status: "INVALID", stage: "FILTER_CARD" };
-            }
-
-            ui.selected.cards.push(material);
-            const cardRange = Z.v2GetRange(event.selectCard);
-            if (!Z.v2CountInRange(ui.selected.cards.length, cardRange)) {
-                return { status: "INVALID", stage: "SELECT_CARD", cardRange };
-            }
-
-            const canonicalCard = get.card();
-            if (!canonicalCard) return { status: "UNSUPPORTED", stage: "NO_CANONICAL_CARD" };
-
-            // “打出”响应没有玩家自由指定目标这一步；只要牌本身能响应并通过 filterOk 即可。
-            if (event.name === "chooseToRespond") {
-                if (intendedTargets.length) return { status: "INVALID", stage: "RESPOND_UNEXPECTED_TARGET" };
-                if (event.filterOk && !event.filterOk()) return { status: "INVALID", stage: "FILTER_OK_RESPOND" };
-                return { status: "VALID", plan: { cards: [material], targets: [], buttons: [] } };
-            }
-
-            const targetRange = Z.v2GetRange(event.selectTarget);
-            const cardInfo = get.info(canonicalCard) || {};
-            const candidates = game.players.slice();
-            if (event.deadTarget || cardInfo.deadTarget) {
-                for (const dead of game.dead || []) if (!candidates.includes(dead)) candidates.push(dead);
-            }
-            const canUseTarget = target => {
-                if (!candidates.includes(target)) return false;
-                if (game.chess && !(event.chessForceAll || cardInfo.chessForceAll) &&
-                    get.distance(player, target, "pure") > 7) return false;
-                if (target.isOut() && !event.includeOut &&
-                    !(event.skill && get.info(event.skill)?.includeOut) && !cardInfo.includeOut) return false;
-                return typeof event.filterTarget === "function" &&
-                    !!event.filterTarget(canonicalCard, player, target);
-            };
-
-            if (intendedTargets.length !== new Set(intendedTargets).size) {
-                return { status: "INVALID", stage: "DUPLICATE_TARGET", targetRange };
-            }
-
-            // 负上限是本体的“自动目标”结构：不手选目标合法；
-            // 若庄周多此一举手动指定，则必须与原生完整目标集合完全一致，少一个/多一个/错一个都不合法。
-            if (targetRange[1] < 0) {
-                const autoTargets = [];
-                for (const current of candidates) {
-                    Z.v2ReplaceArray(ui.selected.targets, autoTargets);
-                    if (canUseTarget(current)) autoTargets.push(current);
+                const canonicalCard = get.card();
+                if (!canonicalCard || get.name(canonicalCard, player) !== "tiesuo") {
+                    return { status: "UNSUPPORTED", stage: "TIESUO_RECAST_TRANSFORMED_CARD" };
                 }
-                if (autoTargets.length < targetRange[0]) {
-                    return { status: "INVALID", stage: "AUTO_TARGET_MIN", targetRange, autoTargets: autoTargets.length };
-                }
-                if (intendedTargets.length) {
-                    if (intendedTargets.length !== autoTargets.length ||
-                        intendedTargets.some(target => !autoTargets.includes(target))) {
-                        return { status: "INVALID", stage: "AUTO_TARGET_MISMATCH", targetRange };
-                    }
-                }
-                Z.v2ReplaceArray(ui.selected.targets, autoTargets);
-                if (event.filterOk && !event.filterOk()) return { status: "INVALID", stage: "FILTER_OK_AUTO", targetRange };
-                return {
-                    status: "VALID",
-                    targetRange,
-                    plan: { cards: [material], targets: autoTargets.slice(), buttons: [] },
-                };
+                return { status: "VALID", plan: { recast: true, cards: [material], targets: [], buttons: [] } };
             }
-
-            // 真正的无目标牌不能凭空多指定目标。
-            if (targetRange[0] === 0 && targetRange[1] === 0) {
-                if (intendedTargets.length) return { status: "INVALID", stage: "UNEXPECTED_TARGET", targetRange };
-                if (event.filterOk && !event.filterOk()) return { status: "INVALID", stage: "FILTER_OK_ZERO_TARGET", targetRange };
-                return {
-                    status: "VALID",
-                    targetRange,
-                    plan: { cards: [material], targets: [], buttons: [] },
-                };
-            }
-
-            // 手选目标牌：完全按庄周实际点击顺序重放原生规则。
-            for (const target of intendedTargets) {
-                const beforeRange = Z.v2GetRange(event.selectTarget);
-                if (beforeRange[1] >= 0 && ui.selected.targets.length >= beforeRange[1]) {
-                    return { status: "INVALID", stage: "TOO_MANY_TARGETS", targetRange: beforeRange };
-                }
-                if (!canUseTarget(target)) {
-                    return { status: "INVALID", stage: "FILTER_TARGET", targetRange: beforeRange };
-                }
-                ui.selected.targets.push(target);
-            }
-
-            const finalTargetRange = Z.v2GetRange(event.selectTarget);
-            if (!Z.v2CountInRange(ui.selected.targets.length, finalTargetRange)) {
-                return { status: "INVALID", stage: "SELECT_TARGET", targetRange: finalTargetRange };
-            }
-            if (event.filterOk && !event.filterOk()) {
-                return { status: "INVALID", stage: "FILTER_OK", targetRange: finalTargetRange };
-            }
-
-            return {
-                status: "VALID",
-                targetRange: finalTargetRange,
-                plan: { cards: [material], targets: ui.selected.targets.slice(), buttons: [] },
-            };
+            return Z.v294ValidateNative(session, material, intendedTargets);
         } catch (error) {
             Z.v2Debug("Validator exception", error);
             return { status: "UNSUPPORTED", stage: "EXCEPTION", error };
@@ -1846,7 +5067,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         }
         for (const target of intendedTargets) {
             target?.classList?.add("xd-zz-v2-proto-selected");
-            if (target === game.me) target?.classList?.add("xd-zz-v2-proto-self-selected");
+            if (target === session.event.player) target?.classList?.add("xd-zz-v2-proto-self-selected");
         }
 
         // V2.7：声明器彻底退出正式闭眼出牌流程。保留玩家当前无名杀的原生手牌、座位与确认控件。
@@ -1858,7 +5079,43 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         if (confirmNode) confirmNode._xdZZBlindSession = session;
         if (ui.confirm) ui.confirm._xdZZBlindSession = session;
     };
+    // 通过本体的 player.recast 真正执行重铸，而不是使用一张没有目标的牌。
+    // chooseToUse 采用 cancel:true 重新进入本次询问，以便正常继续出牌阶段。
+    Z.v2CommitTiesuoRecast = (session, plan) => {
+        if (!session || session.destroyed || get.event() !== session.event) {
+            Z.v2Notice("重铸前事件已变化：本次不处罚、不提交。");
+            return;
+        }
+        const event = session.event;
+        const player = event.player;
+        const material = plan.cards?.[0];
+        if (event.name !== "chooseToUse" || event.type !== "phase" ||
+            event.skill || session.profile?.mode || !material ||
+            !player.getCards(event.position || "h").includes(material) ||
+            get.name(material, player) !== "tiesuo" || !player.canRecast?.(material)) {
+            Z.v2Notice("重铸提交时条件已经变化：本次不处罚、不提交。");
+            Z.v2ClearIntent(session);
+            Z.v2Render(session);
+            return;
+        }
+        session.suspended = true;
+        Z.v2RestoreHandlers(session);
+        Z.v2CloseOwnConfirm(session);
+        Z.v2ClearIntent(session);
+        Z.v27UnmaskNativeCard(material);
+        Z.v2ActiveSessions.delete(session);
+        session.destroyed = true;
+        ui.arena?.classList.remove("xd-zz-v2-proto-active");
+        Z.v2Debug("blind tiesuo recast", material);
+        // 在当前 chooseToUse 恢复之前将原生重铸加入事件队列。
+        player.recast(material);
+        // 原生取消负责清理选牌 UI；紧接着恢复为成功但不使用牌的结果。
+        // 本体 chooseToUse 的 cancel:true 分支会重新询问，出牌阶段不会因此结束。
+        ui.click.cancel();
+        event.result = { bool: true, cancel: true };
+    };
     Z.v2Commit = (session, plan) => {
+        if (plan?.recast) return Z.v2CommitTiesuoRecast(session, plan);
         if (!session || session.destroyed || get.event() !== session.event) {
             Z.v2Notice("提交前事件已变化：本次不处罚、不提交。");
             return;
@@ -1871,7 +5128,14 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         Z.v2ReplaceArray(ui.selected.cards, plan.cards || []);
         Z.v2ReplaceArray(ui.selected.targets, plan.targets || []);
         // 提交前恢复真正要进入原生使用/响应动画的实体牌正面；其余闭眼手牌仍保持原生背面。
-        for (const card of plan.cards || []) Z.v27UnmaskNativeCard(card);
+        // v308：技能本身把牌扣置、不公开（如【木牛流马】：不弃、不失去、不转化）时，牌一直保持背面。
+        let keepHidden = false;
+        try {
+            const info = get.info(session.event.skill);
+            keepHidden = !!(info && !info.viewAs && info.discard === false && info.lose === false &&
+                (info.prepare == null || typeof info.prepare === "function" || ["give2", "throw2"].includes(info.prepare)));
+        } catch (e) {}
+        if (!keepHidden) for (const card of plan.cards || []) Z.v27UnmaskNativeCard(card);
         Z.v2ActiveSessions.delete(session);
         session.destroyed = true;
         ui.arena?.classList.remove("xd-zz-v2-proto-active");
@@ -1880,7 +5144,13 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     };
     Z.v2InstallSession = event => {
         const existing = Z.v2Sessions.get(event);
-        if (existing && !existing.destroyed) return existing;
+        if (existing && !existing.destroyed) {
+            // v301：同一个询问里点【梦】或撤销技能会复用原会话；按当前 event.skill 刷新用途，
+            // 不能沿用建会话时的 phase（否则【梦】+0目标铁索会误入普通重铸分支）。
+            const current = Z.v27Profile(event);
+            if (current) existing.profile = current;
+            return existing;
+        }
         if (existing?.destroyed) Z.v2Sessions.delete(event);
         event.custom ||= {};
         event.custom.replace ||= {};
@@ -1893,6 +5163,12 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         }
         const profile = Z.v27Profile(event);
         if (!profile) return null;
+
+        // 【醒】的“先睁眼”不再放在这里。
+        // 原因：当前 chooseToUse 可能早已有一个普通 BlindBroker session；等重新安装 session 才睁眼会太晚，
+        // 实机表现就会变成“闭眼选牌 -> 确定时才睁眼”。V2.7.7 改由独立 checkBegin 前置钩子处理。
+        if (profile.mode === "awake" && Z.state(event.player).closed > 0) return null;
+
         const session = {
             event,
             profile,
@@ -2017,6 +5293,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         return !!Z.v27Profile(event);
     };
     Z.v2CheckBegin = event => {
+        if (Z.v294NativeValidation?.event === event) return;
         if (!Z.v2proto) return;
         // 一个新的本机选择事件出现时，清掉已经离开当前事件的测试 session。
         for (const session of Array.from(Z.v2ActiveSessions)) {
@@ -2031,6 +5308,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         if (session && !session.validating && !session.suspended) Z.v2EnsureStyle();
     };
     Z.v2CheckEnd = event => {
+        if (Z.v294NativeValidation?.event === event) return;
         if (!Z.v2proto || !Z.v2EligibleEvent(event)) return;
         const session = Z.v2Sessions.get(event);
         if (!session || session.validating || session.suspended || session.destroyed) return;
@@ -2038,8 +5316,1004 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     };
     lib.hooks.checkBegin ||= [];
     lib.hooks.checkEnd ||= [];
+
+    // V2.7.7【醒】顺序：点击技能以后、原生开始计算可选手牌以前，立即睁眼。
+    // 这必须先于 BlindBroker 的 checkBegin 执行，否则旧的闭眼 session 会让玩家先在牌背状态下选牌。
+    Z.awakeFirstCheckBegin = event => {
+        if (Z.v294NativeValidation?.event === event) return;
+        if (!event || event.name !== "chooseToUse" || event.skill !== "xd_xing") return;
+        const player = event.player;
+        if (!player || player !== game.me || !Z.local(player)) return;
+        if (!Z.allowed(player, "awake") ||
+            (Z.state(player).closed <= 0 && !Z.v228PendingAwake(player, event))) {
+            // A previous 【醒】 was already spent. Native cancel may reuse this request;
+            // discard its stale selected skill without starting another frame or use event.
+            event.skill = null;
+            return;
+        }
+        const pending = player._xd_zz_pendingAwake;
+        if (pending?.request === event && !pending.cancelled &&
+            pending.frame && !pending.frame.finished) return;
+
+        // 技能已经由玩家点中；从这一刻起【醒】视为已经发动。先睁眼，再让本体展示真实手牌供选择。
+        const frame = Z.begin(player, "awake");
+        player._xd_zz_pendingAwake = { request: event, frame };
+        Z.v243SyncAwakeButtons(player);
+        Z.v2DestroyAll("awake-open-before-card-selection");
+        Z.v2Debug("awake-first checkBegin: eyes opened before native card selection", event);
+    };
+
+    lib.hooks.checkBegin.unshift(Z.awakeFirstCheckBegin);
     lib.hooks.checkBegin.push(Z.v2CheckBegin);
     lib.hooks.checkEnd.push(Z.v2CheckEnd);
+    lib.hooks.checkEnd.push(Z.v229AwakeSelectionReady);
+    lib.hooks.checkEnd.push(Z.v242AwakeAfterCheck);
+    // 每次原生游戏重新绘制技能栏后，再次移除“已睁眼”的【醒】残留按钮。
+    lib.hooks.checkEnd.push(event => {
+        if (Z.v294NativeValidation?.event === event) return;
+        const player = event?.player;
+        if (!player || player !== game.me || !Z.local(player)) return;
+        Z.v243GuardNativeSkillClicks(player);
+        Z.v243SyncAwakeButtons(player);
+        Z.v245SyncOtherSkillButtons?.();
+    });
+
+    // 闭眼时的“从牌中挑牌”交还原生 AI 结算：只对庄周本人的本地选择事件生效。
+    // 通过事件自己的 isMine 分流，保留本体的合法性过滤、结果结构、移动/弃置日志及动画。
+    // 不接管 chooseToUse/chooseToRespond 或选目标，也不将一般的按钮选项误当作牌。
+    // v280 例外：贯石斧必须由闭眼庄周本人决定是否发动、以及弃置哪些牌。
+    // 随机选牌系统不能替玩家自动选择，否则会把“可发动”的贯石斧变成自动发动。
+    // 只识别贯石斧相关的 chooseCard / chooseToDiscard 询问；其他随机选牌维持原逻辑。
+    Z.v280IsGuanshiChoice = (event, kind) => {
+        if (!event || (kind !== "chooseCard" && kind !== "chooseToDiscard")) return false;
+        const hasGuanshi = value => {
+            if (value == null) return false;
+            if (Array.isArray(value)) return value.some(hasGuanshi);
+            if (typeof value !== "string") return false;
+            if (/guanshi/i.test(value) || value.includes("贯石斧")) return true;
+            try {
+                const translated = get.translation(value);
+                return typeof translated === "string" && translated.includes("贯石斧");
+            } catch (e) {
+                return false;
+            }
+        };
+        let current = event;
+        for (let depth = 0; current && depth < 16; depth++) {
+            if (
+                hasGuanshi(current.skill) ||
+                hasGuanshi(current.sourceSkill) ||
+                hasGuanshi(current.logSkill) ||
+                hasGuanshi(current.name) ||
+                hasGuanshi(current.prompt) ||
+                hasGuanshi(current.prompt2)
+            ) return true;
+            let parent = null;
+            try { parent = current.getParent?.(); } catch (e) {}
+            if (!parent || parent === current) break;
+            current = parent;
+        }
+        return false;
+    };
+
+    // V2.8.4【火攻】：目标展示的真实牌面不能告诉闭眼庄周；随后弃同花色牌也不能由 AI 代选。
+    // 这里不改【火攻】本体的结算、目标展示牌、真实花色或伤害，只改变庄周本机的可见信息与选择方式。
+    Z.v284IsHuogongEvent = event => {
+        if (!event) return false;
+        if (event.name === "huogong") return true;
+        try {
+            const card = event.card;
+            if (card && (get.name(card, event.player) || card.name) === "huogong") return true;
+        } catch (e) {}
+        return false;
+    };
+    Z.v284IsDirectHuogongChild = event => {
+        if (!event) return false;
+        try {
+            const parent = event.getParent?.();
+            if (parent && parent !== event && Z.v284IsHuogongEvent(parent)) return true;
+        } catch (e) {}
+        // 刚 createEvent 的极早阶段在个别版本上 getParent 尚不可用；此时当前事件就是直接父事件。
+        try {
+            if (_status?.event && _status.event !== event && Z.v284IsHuogongEvent(_status.event)) return true;
+        } catch (e) {}
+        return false;
+    };
+    Z.v284IsHuogongDiscardChoice = (event, player) => !!(
+        event && event.name === "chooseToDiscard" && player && player === game.me &&
+        Z.local(player) && Z.blind(player) && Z.v284IsDirectHuogongChild(event)
+    );
+    Z.v284PrepareHuogongDiscard = (event, player) => {
+        if (!Z.v284IsHuogongDiscardChoice(event, player)) return false;
+        if (event._xd_zz_v284HuogongDiscard) return true;
+        event.custom ||= {};
+        event.custom.replace ||= {};
+        // 不覆盖别的扩展已经安装的 confirm 接管；遇到冲突宁可回退，不冒险破坏结算。
+        if (typeof event.custom.replace.confirm === "function") return false;
+
+        const realFilter = event.filterCard;
+        event._xd_zz_v284HuogongDiscard = true;
+        event._xd_zz_v284RealFilter = realFilter;
+        // 原生 UI 仍负责“手动点一张牌”，但闭眼时不能提前用花色过滤告诉庄周哪张才正确。
+        // chooseToDiscard 自己还会再叠加 cardDiscardable，所以不可弃置的牌依然不会变成候选。
+        event.filterCard = () => true;
+
+        const restore = () => {
+            event.filterCard = realFilter;
+            if (event.custom?.replace?.confirm === confirm) delete event.custom.replace.confirm;
+        };
+        const confirm = function (ok) {
+            if (get.event?.() !== event) return;
+            if (!ok) {
+                restore();
+                ui.click.cancel(Z.v307ConfirmButton());
+                return;
+            }
+            const cards = ui.selected.cards.slice();
+            const range = get.select(event.selectCard);
+            const countOK = cards.length >= range[0] && (range[1] < 0 || cards.length <= range[1]);
+            const chosen = cards[0];
+            let legal = !!(countOK && cards.length === 1 && chosen &&
+                player.getCards(event.position || "h").includes(chosen));
+            if (legal && typeof lib.filter?.cardDiscardable === "function") {
+                try { legal = !!lib.filter.cardDiscardable(chosen, player, event); } catch (e) { legal = false; }
+            }
+            if (legal) {
+                try {
+                    legal = typeof realFilter === "function"
+                        ? !!realFilter.call(event, chosen, player, event)
+                        : Z.test(realFilter, chosen, player, event);
+                } catch (e) {
+                    legal = false;
+                }
+            }
+            if (legal) {
+                restore();
+                // 已经由庄周本人盲选，而且真实花色吻合；交回本体正常弃置并继续【火攻】伤害。
+                ui.click.ok(Z.v307ConfirmButton());
+                return;
+            }
+            if (Z.v274SafeTestMode) {
+                // 保留本次盲选窗口及提交检查，允许重选或取消；不弃牌、不造成伤害、不退场。
+                Z.v2Notice("TEST INVALID（仅提示，不判负）：闭眼结算【火攻】时提交的弃牌不符合真实规则；可重选或取消。");
+                return;
+            }
+
+            // 选择本身允许发生，直到提交时才检查真实花色；错误就是闭眼规则违规。
+            // 仅在以后明确关闭测试模式时执行正式违规退场。
+            restore();
+            ui.click.cancel(Z.v307ConfirmButton());
+            Promise.resolve().then(() => Z.expel(player, "闭眼结算【火攻】时弃置了与目标展示牌花色不符的牌"));
+        };
+        event.custom.replace.confirm = confirm;
+        return true;
+    };
+
+    // v301【贯石斧】：闭眼庄周能摸清自己装备区有几张牌，但不知道栏位、牌名、花色、点数。
+    // 发动时手牌、装备都在本体原生的位置上点牌背（v305 起不再另画一排）。
+    // 选择期间不按真实规则灰显（与火攻相同），按确定时再用原生过滤检查；选错只提示、可重选，不判负。
+    // 去掉原生“AI代选”（它按真实牌值挑牌）。真实弃置、装备失去及贯石斧效果仍由本体结算。
+    // v307：替换 confirm 后，本体点按钮时传进来的按钮节点丢了；本体靠 ok(node)/cancel(node) 关掉确定栏。
+    // 交回本体时补上当前确定栏里的按钮，让本体自己关掉它，否则旧确定栏会残留，下一个询问（如【天命】）的按钮出不来。
+    Z.v307ConfirmButton = () => ui.confirm?.firstElementChild || ui.confirm?.firstChild || undefined;
+    Z.v301EquipOrder = player => {
+        const cards = player.getCards("e");
+        if (!Z.blind(player)) return player._xd_zz_equipOrder = cards.slice();
+        const old = player._xd_zz_equipOrder || cards;
+        // 旧装备保留相对顺序，新进入的追加；不按装备类型重排。
+        return player._xd_zz_equipOrder = old.filter(card => cards.includes(card))
+            .concat(cards.filter(card => !old.includes(card)));
+    };
+    // v303：Z 确认——闭眼时只要是弃自己的牌（弃牌阶段、技能代价、贯石斧等），无论弃几张都由庄周手选，
+    // 不再随机。只接手牌/装备区；含判定区等其他区域的询问仍走原有路径。火攻弃牌另有专门处理。
+    Z.v301IsGuanshiDiscard = (event, player) => !!(
+        Z.v2proto && event && event.name === "chooseToDiscard" && player && player === game.me &&
+        Z.local(player) && Z.blind(player) && /^[he]+$/.test(event.position || "h")
+    );
+    // v305：Z 要求尽量用原生界面——装备区不再另画一排牌背，而是直接用本体自己的装备区来点选。
+    // 选择期间只让本人装备区里的牌可点，每张真实装备牌都盖上原生牌背（与手牌同一套遮罩），点击交给原生 ui.click.card。
+    Z.v301Guanshi = null; // { event }
+    Z.v305EquipPickActive = player => {
+        const event = Z.v301Guanshi?.event;
+        return !!(event && !event.finished && event.player === player &&
+            (event.position || "h").includes("e") && Z.blind(player));
+    };
+    Z.v305SyncEquipPickClass = () => {
+        if (typeof document === "undefined") return;
+        document.documentElement.classList.toggle("xd-zz-v305-equip-pick", Z.v305EquipPickActive(game.me));
+    };
+    Z.v301TeardownGuanshi = () => {
+        const state = Z.v301Guanshi;
+        if (!state) return;
+        Z.v301Guanshi = null;
+        // 先恢复装备区的隐藏，再撤掉装备牌上的牌背，避免露出一帧真实装备。
+        Z.v305SyncEquipPickClass();
+        try { Z.v27SyncNativeHandMask?.(game.me); } catch (e) {}
+    };
+    Z.v301RenderGuanshi = event => {
+        const state = Z.v301Guanshi;
+        if (!state || state.event !== event) return;
+        // 先盖牌背，再放开装备区的点击。
+        Z.v27SyncNativeHandMask?.(event.player);
+        Z.v305SyncEquipPickClass();
+    };
+    Z.v301PrepareGuanshi = (event, player) => {
+        if (!Z.v301IsGuanshiDiscard(event, player)) return false;
+        if (event._xd_zz_v301Guanshi) return true;
+        event.custom ||= {};
+        event.custom.replace ||= {};
+        if (typeof event.custom.replace.confirm === "function") return false;
+
+        const realFilter = event.filterCard;
+        event._xd_zz_v301Guanshi = true;
+        // 本体还会再叠加 cardDiscardable；其余合法性等确定时检查，不提前灰显泄漏哪张是贯石斧。
+        event.filterCard = () => true;
+
+        const restore = () => {
+            event.filterCard = realFilter;
+            if (event.custom?.replace?.confirm === confirm) delete event.custom.replace.confirm;
+            if (Z.v301Guanshi?.event === event) Z.v301TeardownGuanshi();
+        };
+        const confirm = function (ok) {
+            if (get.event?.() !== event) return;
+            if (!ok) {
+                restore();
+                ui.click.cancel(Z.v307ConfirmButton());
+                return;
+            }
+            const cards = ui.selected.cards.slice();
+            const range = get.select(event.selectCard);
+            const source = player.getCards(event.position || "h");
+            let legal = cards.length >= range[0] && (range[1] < 0 || cards.length <= range[1]) &&
+                new Set(cards).size === cards.length && cards.every(card => source.includes(card));
+            if (legal && typeof lib.filter?.cardDiscardable === "function") {
+                legal = cards.every(card => {
+                    try { return !!lib.filter.cardDiscardable(card, player, event); } catch (e) { return false; }
+                });
+            }
+            if (legal) {
+                // 贯石斧的过滤依赖“其他已选牌”（至少留一张贯石斧），逐张按其余已选牌检查。
+                legal = cards.every(card => {
+                    try {
+                        return Z.withSelection({ cards: cards.filter(other => other !== card) }, () =>
+                            typeof realFilter === "function"
+                                ? !!realFilter.call(event, card, player, event)
+                                : Z.test(realFilter, card, player, event));
+                    } catch (e) { return false; }
+                });
+            }
+            if (legal && typeof event.filterOk === "function") {
+                try { legal = Z.withSelection({ cards }, () => !!event.filterOk()); } catch (e) { legal = false; }
+            }
+            if (legal) {
+                restore();
+                ui.click.ok(Z.v307ConfirmButton());
+                return;
+            }
+            // v304：张数是公开信息，只按张数不对时提示重选，不算违规。
+            const countWrong = !(cards.length >= range[0] && (range[1] < 0 || cards.length <= range[1]));
+            if (countWrong || Z.v274SafeTestMode) {
+                Z.v2Notice(countWrong ? "闭眼弃牌：张数不对，请重选。" :
+                    "TEST INVALID（正式版将判负）：闭眼弃牌选中了不符合要求的牌；请重选" + (event.forced ? "。" : "或取消。"));
+                return;
+            }
+            // 摸到的牌本身不合规（如弃掉唯一的贯石斧）：与火攻、闭眼出牌一致，属于闭眼违规，判负离场。
+            restore();
+            ui.click.cancel(Z.v307ConfirmButton());
+            Promise.resolve().then(() => Z.expel(player, "闭眼弃牌时选中了不符合要求的牌"));
+        };
+        event.custom.replace.confirm = confirm;
+        return true;
+    };
+    lib.hooks.checkBegin.push(event => {
+        if (Z.v294NativeValidation?.event === event) return;
+        const state = Z.v301Guanshi;
+        if (state && (state.event !== event || state.event.finished || !Z.blind(game.me))) Z.v301TeardownGuanshi();
+    });
+    lib.hooks.checkEnd.push(event => {
+        if (Z.v294NativeValidation?.event === event) return;
+        if (!event?._xd_zz_v301Guanshi || get.event?.() !== event ||
+            event.custom?.replace?.confirm == null || !Z.blind(event.player)) return;
+        // 本体在首次 game.check 之后才创建“AI代选”；推迟到本步骤结束再关掉，之后每次检查也再确认一次。
+        const closeAiPick = () => {
+            if (typeof event.promptdiscard?.close === "function") {
+                try { event.promptdiscard.close(); } catch (e) {}
+                event.promptdiscard = null;
+            }
+        };
+        closeAiPick();
+        Promise.resolve().then(closeAiPick);
+        if (!Z.v301Guanshi) Z.v301Guanshi = { event };
+        Z.v301RenderGuanshi(event);
+    });
+
+    // v308【木牛流马】：闭眼放牌后“是否移动木牛流马？”保留原询问，由庄周本人点座位决定，不再随机代选。
+    // 点座位走本体 ui.click.target → custom.replace.target，只记录意图；不显示本体“可选”高亮（会暴露谁已阵亡）。
+    // 不选就按取消。确定时用本体 filterTarget 检查：点到自己不算；选了不能接收的角色（如已阵亡）按闭眼违规处理。
+    Z.v308MuniuMove = null; // { event, target }
+    Z.v308IsMuniuMove = event => !!(
+        Z.v2proto && event?.name === "chooseTarget" && event.muniu && event.player === game.me &&
+        Z.local(event.player) && Z.blind(event.player)
+    );
+    Z.v308SetMuniuIntent = target => {
+        const state = Z.v308MuniuMove;
+        if (!state) return;
+        for (const current of [...game.players, ...(game.dead || [])]) {
+            if (current !== target) current.classList?.remove("xd-zz-v2-proto-selected");
+        }
+        state.target = target || null;
+        target?.classList?.add("xd-zz-v2-proto-selected");
+    };
+    Z.v308TeardownMuniu = () => {
+        const state = Z.v308MuniuMove;
+        if (!state) return;
+        Z.v308SetMuniuIntent(null);
+        const replace = state.event.custom?.replace;
+        if (replace?.target === state.onTarget) delete replace.target;
+        if (replace?.confirm === state.onConfirm) delete replace.confirm;
+        Z.v308MuniuMove = null;
+    };
+    Z.v308PrepareMuniu = event => {
+        if (Z.v308MuniuMove?.event === event) return;
+        Z.v308TeardownMuniu();
+        const player = event.player;
+        event.custom ||= {};
+        event.custom.replace ||= {};
+        const state = { event, target: null };
+        state.onTarget = target => {
+            if (get.event?.() !== event || !target || target === player) return;
+            Z.v308SetMuniuIntent(state.target === target ? null : target);
+            game.check();
+        };
+        state.onConfirm = ok => {
+            if (get.event?.() !== event) return;
+            if (!ok) {
+                Z.v308TeardownMuniu();
+                ui.click.cancel(Z.v307ConfirmButton());
+                return;
+            }
+            const target = state.target;
+            if (!target) return;
+            let legal = game.players.includes(target) && !game.dead?.includes(target);
+            if (legal) {
+                try {
+                    legal = Z.withSelection({ cards: [], targets: [] }, () =>
+                        typeof event.filterTarget === "function"
+                            ? !!event.filterTarget(undefined, player, target)
+                            : Z.test(event.filterTarget, undefined, player, target));
+                } catch (e) { legal = false; }
+            }
+            if (legal) {
+                Z.v308TeardownMuniu();
+                Z.v2ReplaceArray(ui.selected.targets, [target]);
+                ui.click.ok(Z.v307ConfirmButton());
+                return;
+            }
+            if (Z.v274SafeTestMode) {
+                Z.v2Notice("TEST INVALID（正式版将判负）：木牛流马不能移给这名角色；请重选或取消。");
+                return;
+            }
+            Z.v308TeardownMuniu();
+            ui.click.cancel(Z.v307ConfirmButton());
+            Promise.resolve().then(() => Z.expel(player, "闭眼移动木牛流马时选了不能接收的角色"));
+        };
+        event.custom.replace.target = state.onTarget;
+        event.custom.replace.confirm = state.onConfirm;
+        Z.v308MuniuMove = state;
+    };
+    lib.hooks.checkBegin.push(event => {
+        if (Z.v294NativeValidation?.event === event) return;
+        const state = Z.v308MuniuMove;
+        if (state && (state.event !== event || state.event.finished || !Z.blind(game.me))) Z.v308TeardownMuniu();
+        if (Z.v308IsMuniuMove(event) && get.event?.() === event) Z.v308PrepareMuniu(event);
+    });
+    lib.hooks.checkEnd.push(event => {
+        const state = Z.v308MuniuMove;
+        if (!state || state.event !== event || get.event?.() !== event) return;
+        // 本体的“可选”高亮只落在活着且能接收的角色上，闭眼时一律清掉；选中状态只看庄周自己的意图。
+        Z.v2ReplaceArray(ui.selected.targets, []);
+        for (const current of [...game.players, ...(game.dead || [])]) {
+            current.classList?.remove("selectable", "selected");
+        }
+        Z.v308SetMuniuIntent(state.target);
+        ui.create.confirm(state.target ? "oc" : "c");
+    });
+
+    Z.v280AutoPickEligible = (player, event, kind) => {
+        if (!Z.v2proto || !event || !Z.local(player) || !Z.blind(player)) return false;
+        if (Z.v280IsGuanshiChoice(event, kind)) return false;
+        // v308：木牛流马的“是否移动”由庄周本人决定。
+        if (kind === "chooseTarget" && event.muniu) return false;
+        if (kind !== "chooseButton") return true;
+        let dialog = event.dialog;
+        if (typeof dialog === "number" && typeof get.idDialog === "function") {
+            dialog = get.idDialog(dialog);
+        }
+        const buttons = dialog?.buttons;
+        if (buttons && buttons.length) {
+            return Array.from(buttons).every(button => get.itemtype(button?.link) === "card");
+        }
+        // 五谷丰登有的版本直到事件执行时才建造共用牌池；不因未建造的窗口回退手选。
+        try {
+            const parent = event.getParent?.();
+            return !!(parent?.card && get.name(parent.card) === "wugu");
+        } catch (e) { return false; }
+    };
+    Z.v280InstallAutoPick = (event, player, kind) => {
+        if (!event || typeof event.isMine !== "function") return;
+        const originalIsMine = event.isMine;
+        event.isMine = function (...args) {
+            if (!Z.v280AutoPickEligible(player, this, kind)) {
+                return originalIsMine.apply(this, args);
+            }
+            if (!this._xd_zz_v280RandomAI) {
+                const scores = new WeakMap();
+                // 每个候选本次询问只生成一次随机权重：不读牌面价值，不因 AI 反复调用而抖动。
+                this._xd_zz_v280RandomAI = item => {
+                    if (!item || (typeof item !== "object" && typeof item !== "function")) {
+                        return 0.1 + Math.random();
+                    }
+                    if (!scores.has(item)) scores.set(item, 0.1 + Math.random());
+                    return scores.get(item);
+                };
+            }
+            // 延迟覆盖，避免调用方在 chooseXXX(...).set('ai', ...) 时重新写入非随机权重。
+            this.ai = this._xd_zz_v280RandomAI;
+            return false; // 由无名杀本体的 AI 分支立即合法选择，不创建本地选牌交互。
+        };
+    };
+
+    // V2.8.4：无名杀本体的【火攻】通过 showCards() 把目标牌留在中央窗口，随后再询问使用者弃牌。
+    // 利用本体 showCards 自带的 hiddencards，只对闭眼庄周所在本机把这张展示牌做成空白；
+    // cards2 / filterDiscard 仍保留真实牌与真实花色，所以结算本身完全不变。
+    if (typeof PP.showCards === "function") {
+        const nativeShowCardsV284 = PP.showCards;
+        PP.showCards = function (...args) {
+            const next = nativeShowCardsV284.apply(this, args);
+            const blindLocal = Z.v2proto && game.me && Z.local(game.me) && Z.blind(game.me) && !Z.ended;
+            if (blindLocal && next && Z.v284IsDirectHuogongChild?.(next)) {
+                const cards = Array.isArray(next.cards) ? next.cards.slice() : [];
+                if (cards.length) {
+                    next.hiddencards = cards;
+                    // 原文含真实目标姓名；闭眼时一并换成无身份信息的公共描述。
+                    next.str = "【火攻】目标展示了一张牌（牌面不可见）";
+                    next._xd_zz_v284HuogongHiddenReveal = true;
+                }
+            }
+            return next;
+        };
+    }
+
+    // v281：闭眼时屏蔽“拿到哪张牌”的原生额外展示，不拦截任何真实获得或公共结算。
+    // 不改 v280 随机选牌，不创建新的每帧循环或全局游戏事件监听。
+    Z.v281MuteGainFeedback = () => !!(
+        Z.v2proto && !Z.ended && Z.local(game.me) && Z.blind(game.me)
+    );
+    Z.v298MuteDeathFeedback = player => !!(player && player !== game.me && Z.v281MuteGainFeedback());
+    // $die/$dieflip 是显示方法；die/dieAfter 等真实死亡结算和技能始终交给本体。
+    if (typeof PP.$dieflip === "function") {
+        const nativeDieFlip = PP.$dieflip;
+        PP.$dieflip = function (...args) {
+            if (Z.v298MuteDeathFeedback(this)) return;
+            return nativeDieFlip.apply(this, args);
+        };
+    }
+    if (typeof PP.$die === "function") {
+        const nativeDie = PP.$die;
+        PP.$die = function (...args) {
+            if (!Z.v298MuteDeathFeedback(this)) return nativeDie.apply(this, args);
+            // 原生已经把角色移入 game.dead；在动画/异步死亡结算之前接管其本地显示。
+            if (Z.v215ImageryActive) Z.v282EnsureDeadDreamShell(this);
+            const after = Object.getOwnPropertyDescriptor(this, "$dieAfter");
+            const hasEffect = typeof this.$dieAfter === "function";
+            if (hasEffect && after && !after.configurable && !after.writable) {
+                // 不可临时替换的主题特效：保留 v1.11.5.2 的录像/广播，省略本机动画分支。
+                game.addVideo("die", this);
+                game.broadcast(function (player) { player.$die(); }, this);
+                return;
+            }
+            if (hasEffect) Object.defineProperty(this, "$dieAfter", {
+                configurable: after?.configurable ?? true, enumerable: after?.enumerable ?? false,
+                writable: true, value() {},
+            });
+            try {
+                // 仍执行原生方法，保留录像与广播；只跳过本机的翻转和 $dieAfter 特效。
+                return nativeDie.apply(this, args);
+            } finally {
+                if (hasEffect) {
+                    if (after) Object.defineProperty(this, "$dieAfter", after);
+                    else delete this.$dieAfter;
+                }
+            }
+        };
+    }
+    Z.v297SelfEquipUse = (event, player) => {
+        if (event?.name !== "useCard" || event.player !== player || !event.card) return false;
+        try { if (get.type(event.card, player) !== "equip") return false; }
+        catch (e) { return false; }
+        return !(event.targets?.length) || event.targets.every(target => target === player);
+    };
+    Z.v297SilentCardReason = (player, event) => {
+        if (!Z.v281MuteGainFeedback() || !player || player === game.me || !event) return "";
+        if (Z.v297SelfEquipUse(event, player)) return "equip";
+        // equip 内替换旧装备的动画也无需口述；真实装备区另由 CSS 遮蔽。
+        if (event.name === "equip" && event.player === player) return "equip";
+        let current = event;
+        const seen = new Set();
+        for (let depth = 0; current && depth < 8 && !seen.has(current); depth++) {
+            seen.add(current);
+            // 只跟随原生弃牌的直接链，不能把火攻过程中其他技能用牌/弃牌一并盖掉。
+            if (!["lose", "discard", "loseToDiscardpile", "chooseToDiscard"].includes(current.name) ||
+                (current.player && current.player !== player)) return "";
+            let parent;
+            try { parent = current.getParent?.(); } catch (e) { return ""; }
+            if (!parent || parent === current) return "";
+            if (current.name === "chooseToDiscard") {
+                return Z.v284IsHuogongEvent(parent) && parent.player === player ? "huogong-cost" : "";
+            }
+            current = parent;
+        }
+        return "";
+    };
+    Z.v297MaskSilentClone = node => {
+        // 这里只接收 $throw 的显示副本，绝不给手牌/装备实体添加 infohidden 或改牌属性。
+        node?.classList?.add?.("xd-zz-v297-unspoken-card");
+    };
+    // 判定高亮会在改判时撤掉。副本单独记住其判定用途，闭眼时连同内部牌名一起遮蔽。
+    Z.v299JudgeEvent = event => {
+        const pending = [event], seen = new Set();
+        while (pending.length && seen.size < 32) {
+            const current = pending.shift();
+            if (!current || seen.has(current)) continue;
+            seen.add(current);
+            if (current.name === "judge") return current;
+            for (const method of ["getParent", "getTrigger"]) {
+                try {
+                    const next = current[method]?.();
+                    if (next && next !== current && !seen.has(next)) pending.push(next);
+                } catch (e) {}
+            }
+        }
+        return null;
+    };
+    Z.v299IsJudgeDisplay = (card, event) => {
+        // 睁眼时也可以标记副本，以便本次判定途中闭眼；CSS 只在闭眼本机生效。
+        if (!Z.v2proto || Z.ended || !Z.local(game.me) || !card || !event) return false;
+        if (event.name === "judge") return !!event.player?.judging?.includes(card);
+        // 原生鬼才等改判通过 highlighted respond 展示替换牌，不遮蔽其他普通响应/用牌。
+        return event.name === "respond" && event.highlight === true &&
+            !!event.cards?.includes(card) && !!Z.v299JudgeEvent(event);
+    };
+    // v309 白名单（Z 定的规则）：庄周闭眼时，只有其他角色使用或打出的牌显示牌名（花色点数照旧由 CSS 遮住），
+    // 其他一切牌面都不显示。本体几乎所有牌面展示（飞出的牌、弃牌、获得、展示、拼点、对话框里的牌、弃牌堆浏览……）
+    // 都来自 Card.prototype.copy 生成的副本，所以闭眼期间每个副本一律先盖本体原生牌背（infohidden/infoflip），
+    // 只有“其他角色使用/打出的那张实体牌”在 $throwordered 时揭开。只改显示副本，不动实体牌和结算。
+    Z.v309Blind = () => !!(Z.v2proto && !Z.ended && game.me && Z.local(game.me) && Z.blind(game.me) && Z.alive(game.me));
+    Z.v309Veil = node => {
+        if (!node?.classList || node._xd_zz_v309) return;
+        // 副本会继承实体手牌的遮罩透明度；副本本身要露出牌背。
+        node.classList.remove("xd-zz-native-under-mask");
+        const added = ["infohidden", "infoflip"].filter(name => !node.classList.contains(name));
+        node.classList.add(...added, "xd-zz-v309-veiled");
+        node._xd_zz_v309 = { added, nointro: node._nointro, bg: node.style?.backgroundImage || "" };
+        // 牌面悬停介绍会写出牌名、花色、点数。
+        node._nointro = true;
+        // 卡牌皮肤可能把牌面图写在内联样式里，会盖过主题的牌背。
+        if (node.style?.backgroundImage) node.style.backgroundImage = "";
+        Z.v309EnsureObserver();
+    };
+    Z.v309Unveil = (node, keepNoIntro) => {
+        const record = node?._xd_zz_v309;
+        if (!record) return;
+        delete node._xd_zz_v309;
+        node.classList.remove("xd-zz-v309-veiled", ...record.added);
+        if (!keepNoIntro) {
+            if (record.nointro === undefined) delete node._nointro;
+            else node._nointro = record.nointro;
+        }
+        if (record.bg && !node.style.backgroundImage) node.style.backgroundImage = record.bg;
+    };
+    // 拼点翻牌、转化牌重绘等会在之后去掉 infohidden；被盖住的副本一旦掉了牌背就立刻补回。
+    Z.v309Observer = null;
+    Z.v309EnsureObserver = () => {
+        if (Z.v309Observer || typeof MutationObserver === "undefined" || typeof document === "undefined") return;
+        Z.v309Observer = new MutationObserver(records => {
+            for (const record of records) {
+                const node = record.target;
+                if (node?._xd_zz_v309 && !node.classList.contains("infohidden")) node.classList.add("infohidden");
+            }
+        });
+        Z.v309Observer.observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ["class"] });
+    };
+    // 睁眼：飞出的牌、弃牌这些闭眼时没看到的副本继续保持背面；
+    // 仍留在角色身上的副本（如以牌为标记）是公开信息，睁眼后恢复。
+    Z.v309BlindShown = false;
+    Z.v309SyncBlindState = blind => {
+        if (!blind) {
+            try { Z.v309Observer?.disconnect(); } catch (e) {}
+            Z.v309Observer = null;
+        }
+        if (Z.v309BlindShown === !!blind) return;
+        Z.v309BlindShown = !!blind;
+        if (blind || typeof document === "undefined") return;
+        // 仍开着的对话框（如睁眼时轮到自己选的五谷丰登）也是此刻的公开画面，一并恢复。
+        for (const node of document.querySelectorAll(".xd-zz-v309-veiled")) {
+            if ((node.closest?.(".player") || node.closest?.(".dialog")) && !node.closest(".thrown")) Z.v309Unveil(node);
+        }
+    };
+    // 白名单：本次 $throwordered 抛出的副本，正是其他角色这次使用/打出的实体牌之一。
+    Z.v309IsHeardEvent = event => !!(
+        event && ["useCard", "respond"].includes(event.name) && event.player && event.player !== game.me &&
+        // 改判（高亮打出）会泄露判定，沿用 v299 的判定遮蔽；别人给自己穿装备沿用 v297“未口述”。
+        !event.highlight && !Z.v297SelfEquipUse?.(event, event.player)
+    );
+    // 转化牌（如武圣把桃当杀）：被口述的是“杀”，底下的实体牌不公开。判定与本体 equip/addJudge 用同一标准。
+    Z.v309Converted = event => {
+        const cards = event?.cards || [];
+        return !event?.card || cards.length !== 1 || cards[0]?.name !== event.card.name || !event.card.isCard;
+    };
+    // 把一张飞出的实体牌副本改画成声明的牌（同本体 makeViewAsCard 的做法：副本是普通 div，借 Card 原型重新 init）。
+    Z.v310Declare = (node, vcard) => {
+        Z.v309Unveil(node, true);
+        const name = get.name?.(vcard, false) || vcard?.name;
+        if (name) {
+            // 底牌若是整张图的皮肤，牌面图写在副本自身的内联背景上，先清掉，交给 init 按声明的牌重画。
+            if (node.style) node.style.backgroundImage = "";
+            const Card = lib.element?.Card;
+            const proto = Reflect.getPrototypeOf(node);
+            try {
+                if (Card?.prototype && node.node) {
+                    Reflect.setPrototypeOf(node, Card.prototype);
+                    node.node.name2 = {};
+                    node.node.range = {};
+                    node.init(["", "", name, get.nature?.(vcard, false) || vcard?.nature]);
+                }
+            } catch (error) {
+                console.warn("[风雨如晦] v310 声明牌重绘失败", error);
+            } finally {
+                if (node.node) { delete node.node.name2; delete node.node.range; }
+                Reflect.setPrototypeOf(node, proto);
+            }
+            node.name = name;
+        }
+        node.suit = "";
+        node.number = 0;
+        node.classList.add("xd-zz-v309-heard", "xd-zz-v310-declared");
+    };
+    Z.v309MaybeUnveilHeard = (owner, node) => {
+        if (!node?._xd_zz_v309) return;
+        const event = get.event?.();
+        if (!Z.v309IsHeardEvent(event) || Z.v297SilentCardReason(owner, event)) return;
+        const cards = event.cards || [];
+        const id = node._cardid;
+        const physical = id != null && cards.some(card => card?.cardid === id);
+        // 没有实体牌的“视为使用/打出”：本体（开启卡牌动画信息时）临时造一张同名牌抛出。
+        const virtual = !cards.length && owner === event.player && !!event.card && node.name === event.card.name;
+        // v310：转化牌只“听见”声明的牌名。最后一张实体牌副本改画成无花色点数的声明牌，其余实体副本整张不出现，
+        // 既看不出底牌是什么，也看不出用了几张、是否转化。
+        if (physical && Z.v309Converted(event)) {
+            if (cards[cards.length - 1]?.cardid === id) Z.v310Declare(node, event.card);
+            else node.classList.add("xd-zz-v310-folded");
+            return;
+        }
+        if (virtual || physical) {
+            // 留着 _nointro：悬停介绍会显示花色点数。
+            Z.v309Unveil(node, true);
+            node.classList.add("xd-zz-v309-heard");
+        }
+    };
+    // 庄周自己盲用/盲打：本体会在他头像上弹出牌名并念出牌名，闭眼时都不出。
+    if (typeof PP.tryCardAnimate === "function") {
+        const nativeTryCardAnimate = PP.tryCardAnimate;
+        PP.tryCardAnimate = function (...args) {
+            const event = get.event?.();
+            if (Z.v309Blind() && event && ["useCard", "respond"].includes(event.name) && event.player === this &&
+                !Z.v309IsHeardEvent(event)) return;
+            return nativeTryCardAnimate.apply(this, args);
+        };
+    }
+    if (typeof game.playCardAudio === "function") {
+        const nativePlayCardAudio = game.playCardAudio;
+        game.playCardAudio = function (card, sex, ...rest) {
+            if (sex === game.me && Z.v309Blind()) return;
+            return nativePlayCardAudio.call(this, card, sex, ...rest);
+        };
+    }
+    // 出牌记录栏：闭眼期间新增的记录一律盖牌背、不弹介绍（睁眼后可翻看，与战报同理）。
+    if (typeof game.logv === "function") {
+        const nativeLogv = game.logv;
+        game.logv = function (...args) {
+            const node = nativeLogv.apply(this, args);
+            if (node?.querySelectorAll && Z.v309Blind()) {
+                node._nointro = true;
+                for (const card of node.querySelectorAll(".card")) Z.v309Veil(card);
+            }
+            return node;
+        };
+    }
+    // 对话框里的牌按钮：本体在复制之后又把内联牌面图贴回去；以实体牌造的 vcard 按钮不经过复制。
+    const presets = ui.create?.buttonPresets;
+    if (presets && typeof presets.card === "function") {
+        const nativeCardPreset = presets.card;
+        presets.card = function (...args) {
+            const node = nativeCardPreset.apply(this, args);
+            const record = node?._xd_zz_v309;
+            if (record && node.style?.backgroundImage) {
+                record.bg = node.style.backgroundImage;
+                node.style.backgroundImage = "";
+            }
+            return node;
+        };
+    }
+    if (presets && typeof presets.vcard === "function") {
+        const nativeVcardPreset = presets.vcard;
+        presets.vcard = function (item, ...rest) {
+            const node = nativeVcardPreset.call(this, item, ...rest);
+            if (node && get.itemtype(item) === "card" && Z.v309Blind()) Z.v309Veil(node);
+            return node;
+        };
+    }
+    // 右键/长按/悬停庄周自己的头像会列出装备与判定区的牌：闭眼时这些牌换成牌背。
+    if (typeof get.nodeintro === "function") {
+        const nativeNodeIntro = get.nodeintro;
+        get.nodeintro = function (node, ...rest) {
+            const uiintro = nativeNodeIntro.call(this, node, ...rest);
+            if (uiintro?.querySelectorAll && node === game.me && Z.v309Blind()) {
+                for (const card of uiintro.querySelectorAll(".card")) {
+                    card.classList.add("infohidden", "infoflip");
+                    if (card.style) card.style.backgroundImage = "";
+                }
+            }
+            return uiintro;
+        };
+    }
+    const CP = lib.element.Card?.prototype || lib.element.card;
+    if (typeof CP?.copy === "function") {
+        const nativeCopy = CP.copy;
+        CP.copy = function (...args) {
+            const judge = Z.v299IsJudgeDisplay(this, get.event?.());
+            const clone = nativeCopy.apply(this, args);
+            // 只改返回的动画/展示副本，不标记实体牌，也不修改判定属性与结果。
+            if (judge && clone && clone !== this) clone.classList?.add?.("xd-zz-v299-judge-card");
+            if (clone && clone !== this && Z.v309Blind()) Z.v309Veil(clone);
+            return clone;
+        };
+    }
+    if (typeof PP.popup === "function") {
+        const nativePopup = PP.popup;
+        PP.popup = function (name, ...args) {
+            // 本体的判定结果浮字也是视觉信息；真实判定结果、广播与技能宣告均不改。
+            if (this !== game.me && Z.v281MuteGainFeedback() &&
+                (name === "判定生效" || name === "判定失效") && get.event?.()?.name === "judge") return;
+            return nativePopup.call(this, name, ...args);
+        };
+    }
+    for (const method of ["$throwordered", "$throwordered1", "$throwordered2"]) {
+        const native = PP[method];
+        if (typeof native !== "function") continue;
+        PP[method] = function (node, ...rest) {
+            if (Z.v297SilentCardReason(this, get.event?.())) Z.v297MaskSilentClone(node);
+            Z.v309MaybeUnveilHeard(this, node);
+            return native.call(this, node, ...rest);
+        };
+    }
+    if (typeof PP.$throw === "function") {
+        const nativeThrow = PP.$throw;
+        PP.$throw = function (cards, ...rest) {
+            const reason = Z.v297SilentCardReason(this, get.event?.());
+            const result = nativeThrow.call(this, cards, ...rest);
+            if (reason) {
+                Z.v297MaskSilentClone(result);
+                for (const card of Array.isArray(cards) ? cards : [cards]) Z.v297MaskSilentClone(card?.clone);
+            }
+            return result;
+        };
+    }
+    // v306：Z 定的规则——闭眼庄周弃置的牌（弃自己的或弃别人的）没有人口述，背面朝上进弃牌堆。
+    // 用本体自带的“非公开弃置”：把这次 lose 的 visible 去掉，本体自己会给弃牌副本加牌背；战报只记张数。
+    Z.v306FaceDownDiscard = event => {
+        if (!Z.v2proto || Z.ended || event?.name !== "discard") return false;
+        const discarder = event.discarder || event.player;
+        return !!(discarder && Z.blind(discarder));
+    };
+    if (typeof PP.lose === "function") {
+        const nativeLose = PP.lose;
+        PP.lose = function (...args) {
+            const parent = get.event?.();
+            const next = nativeLose.apply(this, args);
+            if (next && parent?.player === this && Z.v306FaceDownDiscard(parent)) next.visible = false;
+            return next;
+        };
+    }
+    // v309：战报在闭眼时虽被收起，但睁眼后（以及暂停页的完整战报）仍能翻看，所以闭眼期间写入的战报同样按白名单处理：
+    // 其他角色使用/打出的牌只写牌名；其余实体牌（含庄周自己用的牌）只写张数。
+    Z.v309SanitizeLog = (args, event) => {
+        const heard = Z.v309IsHeardEvent(event);
+        const converted = heard && Z.v309Converted(event);
+        // v310：转化/视为的用牌只写声明的牌名，括号里的底牌整段去掉（连“几张牌”也不写，否则仍看得出转化）。
+        if (converted && Array.isArray(event?.cards) && event.cards.length) {
+            const isCards = value => Array.isArray(value) && value.length && value.every(item => get.itemtype(item) === "card");
+            const at = args.findIndex(value => isCards(value) || get.itemtype(value) === "card");
+            if (at > 0 && args[at - 1] === "（") {
+                if (args[at + 1] === "）") args = args.slice(0, at - 1).concat(args.slice(at + 2));
+                else if (typeof args[at + 1] === "string" && args[at + 1].startsWith("，")) {
+                    args = args.slice(0, at - 1).concat(["（" + args[at + 1].slice(1)], args.slice(at + 2));
+                }
+            }
+        }
+        const own = !!(event && ["useCard", "respond"].includes(event.name) && event.player === game.me);
+        const cardName = card => "#y" + String(get.translation(card?.name) || card?.name || "牌");
+        return args.map(value => {
+            const type = get.itemtype(value);
+            let cards = null;
+            if (type === "card") cards = [value];
+            else if (type === "cards") cards = value;
+            else if (Array.isArray(value) && value.length && value.every(item => get.itemtype(item) === "card")) cards = value;
+            if (cards) {
+                if (!cards.length) return value;
+                if (heard && !converted) return cards.length === 1 ? cardName(cards[0]) : cards.map(card => String(get.translation(card.name) || card.name)).join("、");
+                return get.cnNumber(cards.length) + "张牌";
+            }
+            // 转化/虚拟牌对象：本体会连带写出底牌的花色点数。
+            if (value && typeof value === "object" && typeof value.name === "string" && lib.card?.[value.name] && !type?.startsWith?.("player")) {
+                if (heard) return cardName(value);
+                if (own) return "一张牌";
+                if (value.suit || value.number) return "一张牌";
+            }
+            return value;
+        });
+    };
+    if (typeof game.log === "function") {
+        const nativeLog = game.log;
+        game.log = function (...args) {
+            const event = get.event?.();
+            if (Z.v309Blind()) {
+                // v310：改判（高亮打出，如鬼才、鬼道）只听见“X发动了【技能】”，用哪张牌改的整行不写。
+                if (event?.name === "respond" && event.highlight && args[1] === "打出了") return;
+                // 用牌后续的“装备了 / 被贴上了”：只有被口述的用牌才写；庄周自己盲用、别人自穿装备不写（动词本身就泄露牌的类别）。
+                if (["equip", "addJudge"].includes(event?.name)) {
+                    const use = event.getParent?.("useCard");
+                    if (use && !Z.v309IsHeardEvent(use)) return;
+                    if (use) args = Z.v309SanitizeLog(args, use);
+                    else args = Z.v309SanitizeLog(args, event);
+                } else args = Z.v309SanitizeLog(args, event);
+            } else if (args[1] === "弃置了" && Array.isArray(args[2]) && args[2].length &&
+                args[0] === event?.player && Z.v306FaceDownDiscard(event)) {
+                args[2] = get.cnNumber(args[2].length) + "张牌";
+            }
+            return nativeLog.apply(this, args);
+        };
+    }
+    Z.v281InWugu = () => {
+        let event = _status.event;
+        for (let depth = 0; event && depth < 16; depth++) {
+            const card = event.card;
+            if (card && (get.name(card, event.player) || card.name) === "wugu") return true;
+            const parent = event.getParent?.();
+            if (!parent || parent === event) break;
+            event = parent;
+        }
+        return false;
+    };
+
+    // 【顺手牵羊】等自动交牌流程会通过 $giveAuto 向本地获牌者展示牌面。
+    // 仅遮蔽本地闭眼庄周是接收者时的这段附加动画，player.gain 的实际结算保持原样。
+    if (typeof PP.$giveAuto === "function") {
+        const nativeGiveAuto = PP.$giveAuto;
+        PP.$giveAuto = function (cards, recipient, ...rest) {
+            if (recipient === game.me && Z.v281MuteGainFeedback()) return;
+            return nativeGiveAuto.apply(this, arguments);
+        };
+    }
+
+    // 【五谷丰登】的真实 gain 之后，本体另用 $gain2 播放牌面动画；
+    // 只跳过闭眼庄周本人以及本次五谷丰登内的该段视觉反馈。
+    if (typeof PP.$gain2 === "function") {
+        const nativeGain2 = PP.$gain2;
+        PP.$gain2 = function (...args) {
+            if (Z.v281MuteGainFeedback() && (this === game.me || Z.v281InWugu())) {
+                return;
+            }
+            return nativeGain2.apply(this, args);
+        };
+    }
+
+    // 五谷牌池的原生共用窗口在其他人选择后也可能写上具体牌名。
+    // 只在闭眼本机给窗口加视觉遮蔽：不删除牌池、按钮或窗口，原生自动随机选择仍可读取。
+    Z.v281EnsureWuguMaskCSS = () => {
+        if (typeof document === "undefined" || document.getElementById("xd-zz-v281-wugu-mask-css")) return;
+        const style = document.createElement("style");
+        style.id = "xd-zz-v281-wugu-mask-css";
+        style.textContent = ".xd-zz-v226-blind .xd-zz-v281-wugu-mask{visibility:hidden!important;pointer-events:none!important;}";
+        document.head.appendChild(style);
+    };
+    // 无懈口述只读原生 info_map 中的牌名与人物引用，不翻译真实角色或整张实体牌。
+    // 原生事件、牌面、按钮和无懈连锁均不改；仅替换本地询问的 caption。
+    Z.v296WuxieDialogs = new Set();
+    Z.v296LocalWuxie = event => !!(Z.v2proto && event?.name === "chooseToUse" &&
+        event.type === "wuxie" && event.player === game.me && Z.local(event.player) && event.isMine?.());
+    Z.v296DreamWuxiePrompt = event => {
+        const fallback = "是否使用【无懈可击】？";
+        try {
+            let map = event.info_map;
+            if (!map) map = event.getParent?.("_wuxie")?._info_map;
+            if (!map && event.respondTo?.[1]) map = {
+                player: event.respondTo[0], card: event.respondTo[1],
+                target: event.source, targets: event.source2, state: event.state,
+            };
+            if (!map?.card) return fallback;
+            const origin = map._source || map;
+            const cardName = card => {
+                const name = typeof card?.viewAs === "string" ? card.viewAs : card?.name;
+                return name ? String(get.translation(name) || name) : "";
+            };
+            const name = cardName(origin.card);
+            const responseName = cardName(map.card) || name;
+            if (!name || !responseName) return fallback;
+            let declaration = "";
+            if (origin.isJudge && origin.target) {
+                declaration = Z.v226PlayerName(origin.target) + "的【" + name + "】";
+            } else if (origin.player) {
+                const targets = origin.multitarget || origin.multitargets ? origin.targets || [] :
+                    origin.target ? [origin.target] : [];
+                const names = [...new Set(targets.filter(Boolean))].map(target => Z.v226PlayerName(target));
+                declaration = Z.v226PlayerName(origin.player) + (names.length ? "对" + names.join("、") : "") +
+                    "使用的【" + name + "】";
+            }
+            if (declaration) declaration += "即将" + ((map.state ?? event.state ?? 1) > 0 ? "生" : "失") + "效。";
+            // 连续无懈保留原锦囊的公开语境，同时说清本次响应的是上一张无懈。
+            if (map._source && map.player) declaration += Z.v226PlayerName(map.player) +
+                "使用了【" + responseName + "】。";
+            return Z.v226Escape(declaration + "是否对【" + responseName + "】使用【无懈可击】？");
+        } catch (e) { return fallback; }
+    };
+    Z.v296SyncWuxieDialogs = (forceOpen = false) => {
+        for (const record of Z.v296WuxieDialogs) {
+            const { event, dialog, caption, original } = record;
+            const blind = !forceOpen && !Z.ended && !event.finished &&
+                Z.v296LocalWuxie(event) && Z.blind(event.player);
+            const text = blind ? Z.v296DreamWuxiePrompt(event) : original;
+            if (record.text === text) continue;
+            if (caption) caption.innerHTML = text;
+            else if (typeof dialog.setCaption === "function") dialog.setCaption(text);
+            record.text = text;
+        }
+    };
+    if (typeof ui?.create?.dialog === "function") {
+        const nativeCreateDialog = ui.create.dialog;
+        ui.create.dialog = function (...args) {
+            const event = get.event?.();
+            const wuxie = Z.v296LocalWuxie(event) && typeof args[0] === "string" && args[0] === event.prompt;
+            const original = args[0];
+            if (wuxie && !Z.ended && Z.blind(event.player)) args[0] = Z.v296DreamWuxiePrompt(event);
+            const dialog = nativeCreateDialog.apply(this, args);
+            if (event?.name === "judge" && Z.v2proto && !Z.ended && Z.local(game.me) &&
+                args[0] === `${get.translation(event.player)}的${event.judgestr}判定`) {
+                // 本体的判定展示窗无选择按钮；隐藏本机显示，不改变窗口或录像的生命周期。
+                dialog?.classList?.add?.("xd-zz-v299-judge-dialog");
+            }
+            if (wuxie && dialog) {
+                const record = { event, dialog, original, text: args[0], caption: dialog.querySelector?.(".caption") };
+                Z.v296WuxieDialogs.add(record);
+                if (typeof dialog.close === "function") {
+                    const close = dialog.close;
+                    dialog.close = function (...closeArgs) {
+                        Z.v296WuxieDialogs.delete(record);
+                        return close.apply(this, closeArgs);
+                    };
+                }
+            }
+            if (args[0] === "五谷丰登" && Z.v281MuteGainFeedback() && dialog?.classList) {
+                Z.v281EnsureWuguMaskCSS();
+                dialog.classList.add("xd-zz-v281-wugu-mask");
+            }
+            return dialog;
+        };
+    }
+    lib.hooks.checkBegin.push(event => {
+        if (Z.v294NativeValidation?.event === event) return;
+        Z.v296SyncWuxieDialogs();
+    });
 
     // V2.7 默认走原生 chooseToUse / chooseToRespond；下方旧 request 分支仅作历史兼容，不应在 v2proto=true 时启用。
     for (const name of ["chooseToUse", "chooseToRespond"]) {
@@ -2067,6 +6341,13 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
 
         PP[name] = function (...args) {
             const next = original.apply(this, args);
+            // 【火攻】弃同花色牌必须由闭眼庄周本人盲选；不能继续走 v280 的随机 AI 代选。
+            const huogongManual = Z.v2proto && name === "chooseToDiscard" &&
+                Z.v284PrepareHuogongDiscard?.(next, this);
+            // v301【贯石斧】：闭眼庄周本人手选，可选匿名装备牌背；不走随机代选。
+            const guanshiManual = Z.v2proto && name === "chooseToDiscard" && !huogongManual &&
+                Z.v301PrepareGuanshi?.(next, this);
+            if (Z.v2proto && Z.local(this) && !huogongManual && !guanshiManual) Z.v280InstallAutoPick(next, this, name);
 
             if (!Z.v2proto && Z.local(this) && Z.blind(this)) {
                 next.setContent(async function (event) {
@@ -2249,6 +6530,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
 
         PP[name] = function (...args) {
             const next = original.apply(this, args);
+            if (Z.v2proto && Z.local(this)) Z.v280InstallAutoPick(next, this, name);
 
             if (!Z.v2proto && Z.local(this) && Z.blind(this)) {
                 next.setContent(async function (event) {
@@ -2438,6 +6720,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
 
         PP.chooseButton = function (...args) {
             const next = original.apply(this, args);
+            if (Z.v2proto && Z.local(this)) Z.v280InstallAutoPick(next, this, "chooseButton");
 
             if (!Z.v2proto && Z.local(this) && Z.blind(this)) {
                 next.setContent(async function (event) {
@@ -2688,6 +6971,14 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         if (Z.v2proto && Z.v2DestroyAll) Z.v2DestroyAll("game-over");
         Z.v27UnmaskAllNativeCards?.();
         Z.v274CloseTestPeekControl?.();
+        Z.v301TeardownGuanshi?.();
+        Z.v215StopImagery?.();
+        Z.v245RestoreOtherSkillButtons?.();
+        Z.v215ManualImagery?.clear();
+        Z.v287GrilledArts?.clear();
+        Z.v220PersistentForms?.clear();
+        Z.v239DuelStates?.clear();
+        Z.v215PreviousMap?.clear();
         if (typeof document !== "undefined") {
             document.documentElement.classList.remove("xd-zz-blind");
             document.body.classList.remove("xd-zz-blind");
@@ -2783,8 +7074,55 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         xd_xing: {
             mark: true,
             marktext: "醒",
+            group: "xd_xing_empty",
             intro: {
                 content: "在用牌询问中选择【醒】",
+            },
+        },
+
+        // 【醒】的“无牌可供明置”分支。
+        // 与正常【醒】互斥：只有当前没有任何暗置手牌时才出现。
+        // 不选牌、不问确定；点击技能即先睁眼，再按“否则”锁到【梦】。
+        xd_xing_empty: {
+            sourceSkill: "xd_xing",
+            enable: "chooseToUse",
+            filter(event, player) {
+                if (_status.connectMode || !Z.allowed(player, "awake")) return false;
+                if (Z.state(player).closed <= 0) return false;
+                return !Z.hasAwakeMaterial(player);
+            },
+            filterCard() { return false; },
+            selectCard: -1,
+            discard: false, lose: false, delay: false, log: false,
+            async content(event, trigger, player) {
+                const frame = Z.begin(player, "awake");
+                // 睁眼已经无条件完成；因为没有牌可供明置，后半句无法完成，故执行“否则”。
+                Z.fail(frame);
+                Z.finish(frame);
+
+                // 【醒】本身不能替代当前原生的“使用一张牌”要求。
+                // 若它发生在一个 chooseToUse 询问中，发动后让该询问重新开始；
+                // 这样出牌阶段可以继续操作，回合外也仍需正常完成原先的响应。
+                let request = event.getParent?.();
+                for (let i = 0; request && i < 6 && request.name !== "chooseToUse"; i++) {
+                    request = request.getParent?.();
+                }
+                if (request?.name === "chooseToUse" && typeof request.goto === "function") {
+                    if (request.skill === "xd_xing_empty") request.skill = null;
+                    request.goto(0); // Continue the original response request, not another 【醒】 activation.
+                }
+            },
+            ai: { order: 7 },
+        },
+
+        xd_zz_lock_blocker: {
+            charlotte: true,
+            skillBlocker(skill, player) {
+                const z = lib.xd_utils.zhuangzhou;
+                if (!z.state(player).lock || z.v301LockExempt.includes(skill)) return false;
+                const info = get.info(skill);
+                if (!info || info.charlotte || info.equipSkill) return false;
+                return true;
             },
         },
 
@@ -2796,7 +7134,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
                 "useCardBefore", "useCard1", "useCardAfter", "respondBefore",
                 "cardsDiscardAfter", "showCardsAfter", "addShownCardsAfter", "hideShownCardsAfter",
                 "equipAfter", "addJudgeAfter", "dieAfter", "changeSkillsAfter",
-                "phaseUseBegin", "phaseUseEnd",
+                "phaseUseBegin", "phaseUseEnd", "chooseToUseAfter", "useCardToTarget", "damageEnd",
             ] },
             async content(event, trigger) {
                 const z = lib.xd_utils.zhuangzhou;
@@ -2809,7 +7147,8 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
                 // V2.7.3 测试脚手架：正式技能本身并非“出牌阶段自动闭眼”。
                 // 这里只为了让实机回归可以稳定进入 BlindBroker / 原生牌背遮罩环境。
                 // 等闭眼出牌核心验证完毕后必须删除这段自动闭眼逻辑，恢复真实【寐】状态机。
-                if (name === "phaseUseBegin" && z.v2proto && trigger.player === game.me && z.owns(trigger.player)) {
+                // 仅在总开关 ZHUANGZHOU_TEST_SCAFFOLD 打开时生效。
+                if (z.v274SafeTestMode && name === "phaseUseBegin" && z.v2proto && trigger.player === game.me && z.owns(trigger.player)) {
                     if (z.state(trigger.player).closed !== 2) z.eyes(trigger.player, 2);
                     else z.refresh();
                     z.v274RefreshTestPeekControl?.(trigger.player);
@@ -2817,6 +7156,20 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
                 }
                 if (name === "phaseUseEnd" && z.v2proto && trigger.player === game.me && z.owns(trigger.player)) {
                     z.v2DestroyAll("phase-use-end");
+                }
+                if (name === "chooseToUseAfter") {
+                    const player = trigger.player;
+                    const pending = player?._xd_zz_pendingAwake;
+                    if (pending?.request === trigger) {
+                        if (pending.frame && !pending.frame.finished) {
+                            // 已经发动【醒】并睁眼，却没有成功进入“明置并使用牌”链：执行“否则”。
+                            z.fail(pending.frame);
+                            z.finish(pending.frame);
+                        }
+                        // 无论成功与否都不能让旧请求污染下一次【醒】入口。
+                        delete player._xd_zz_pendingAwake;
+                        z.v230RefreshNativeChoice(player);
+                    }
                 }
                 if (name === "loseBefore" && z.owns(trigger.player)) {
                     const player = trigger.player;
@@ -2839,20 +7192,68 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
                         if (!record.cards.length) z.pending.splice(z.pending.indexOf(record), 1);
                     }
                 }
+                if (name === "useCard1" && z.v226DreamReportActive) z.v226RecordUseCard(trigger);
+                if (name === "respondBefore" && z.v226DreamReportActive) z.v309RecordRespond?.(trigger);
+                if (name === "useCard1" && z.v215ImageryActive) z.v239BeginUse(trigger);
+                if (name === "useCardToTarget" && z.v215ImageryActive && z.local(game.me) && z.blind(game.me)) {
+                    // 追加/单独指定的目标也计入；不抢技能的真实目标处理。
+                    z.v239RegisterTarget(z.v239GetUseEvent(trigger), trigger.player, trigger.target);
+                    const target = trigger.target || trigger.player;
+                    const source = trigger.player;
+                    if (target && target !== game.me) {
+                        // 仅记录已经发生的公开指定；映射切换不改真实用牌链。
+                        z.v226RecordTransformation(target, z.v220OnTargeted(source, target, trigger.card));
+                        if (source === game.me) z.v241OnZhuangzhouUseOnOthers?.();
+                    }
+                }
+                if (name === "damageEnd") {
+                    // 同一次 useCard 子树下真的造成伤害，不能计作削灰而不伤。
+                    z.v239RegisterDamage(trigger);
+                    // 保留烤鱼等变图，不播报伤害数值；同一事件重复进入只处理一次。
+                    z.v230HandleDamageEnd(trigger);
+                }
+                if (name === "useCardAfter" && z.v215ImageryActive) z.v239FinalizeUse(trigger);
+                if (name === "useCardBefore" && trigger.card?.storage?._xd_zz_v230RejectedAwake) {
+                    trigger.cancel();
+                    return;
+                }
                 const token = z.tokenOf(trigger);
                 if (name === "useCardBefore") {
                     if (token) {
+                        z.useTrace(token, "已进入useCardBefore");
                         if (!token.frame) token.frame = z.begin(token.player, token.mode);
-                        if (!await z.flip(token)) {
-                            // 待使用期间牌被其他效果移走/翻面：不能伪造一次成功使用。
-                            trigger.cancel();
-                            return;
+                        // V2.7.9：日志证明同一次发动可能多次进入 useCardBefore。
+                        // 只在第一次进入时要求「梦选明牌 / 醒选暗牌」并执行翻面。
+                        // 第一次翻面已经改变牌的明暗状态；第二次若再用翻面前的条件
+                        // 检查同一张牌，会把已成功翻面的正常用牌错误取消。
+                        if (token.flipped) {
+                            z.useTrace(token, "重复进入useCardBefore：沿用此前明暗置结果；" +
+                                (token.firstUseEvent === trigger ? "原事件" : "事件引用不同，保留进一步诊断"));
+                        } else {
+                            if (!await z.flip(token)) {
+                                // 首次尝试期间牌被其他效果移走或原本状态不符，不能伪造成功使用。
+                                z.useTrace(token, "首次明暗置检查失败：取消用牌");
+                                trigger.cancel();
+                                return;
+                            }
+                            z.useTrace(token, "明暗置完成");
+                            if (!token.zoneTransfer) {
+                                // 首次成功翻面后才去实体化，保留原生 chooseToUse 的选牌结果。
+                                // 后续重复进入 useCardBefore 不再重复更改牌材料。
+                                trigger.cards = [];
+                                if (Array.isArray(trigger.card?.cards)) trigger.card.cards = [];
+                                z.useTrace(token, "已进入使用事件后转为无材料虚拟牌");
+                            }
                         }
                     } else {
                         await z.checkEvidence(trigger.cards || [], false);
                     }
                 }
-                if (name === "useCard1" && token) token.used = true;
+                if (name === "useCard1" && token) {
+                    token.used = true;
+                    z.useTrace(token, "已进入useCard1");
+                }
+                if (name === "useCardAfter" && token) z.useTrace(token, "已进入useCardAfter");
                 z.refresh();
             },
         },
@@ -2873,44 +7274,101 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             "否则，你下次仅能发动【醒】。<br>以暗置方式使用：将一张明置手牌暗置并使用，牌的信息不变；装备牌和延时锦囊仍按正常结算移动至相应区域。",
 
         xd_xing: "醒",
+        xd_xing_empty: "醒",
         xd_xing_info:
             "你可以睁开双眼并以明置方式使用牌，然后重铸所有与之同花色的暗置牌，" +
             "否则，你下次仅能发动【梦】。<br>以明置方式使用：将一张暗置手牌明置并使用；装备牌和延时锦囊先明置，再离开手牌并按正常结算移动至相应区域。",
+        xd_zz_lock_blocker: "梦醒限制",
+        xd_xing_empty_info:
+            "当没有暗置手牌可供明置时，仍可直接发动【醒】：先睁眼，再因后续无法完成而执行“否则”。",
     };
 
-    // 【梦】【醒】继续使用无名杀原生技能/手牌入口；双眼全闭时由 BlindBroker 接管点击与最终合法性裁判。
+    // 【梦】继续在闭眼状态下由 BlindBroker 接管；【醒】一经发动先睁眼，再回到原生可见手牌选择。
     // 普通牌使用时实体材料留手；装备/延时锦囊保留实体材料以完成真实区域转移。
     for (const [id, mode] of [["xd_meng", "dream"], ["xd_xing", "awake"]]) {
         Object.assign(skills[id], {
             enable: "chooseToUse", position: "h", selectCard: 1,
             discard: false, lose: false, delay: false, log: false,
             filter(event, player) {
-                return !_status.connectMode && Z.allowed(player, mode) &&
-                    (mode !== "awake" || Z.state(player).closed > 0) &&
-                    player.getCards("h").some(card => Z.shown(card, player) === (mode === "dream"));
+                if (_status.connectMode || !Z.allowed(player, mode)) return false;
+                if (mode === "awake") {
+                    // 有牌分支：点击【醒】后先睁眼，随后必须选 1 张原先暗置的手牌；
+                    // pending frame 用于睁眼后维持同一次【醒】的原生选牌流程。
+                    if (Z.v228PendingAwake(player, event)) return true;
+                    return Z.state(player).closed > 0 && Z.hasAwakeMaterial(player);
+                }
+                return player.getCards("h").some(card => Z.shown(card, player));
             },
             filterCard(card, player) {
+                if (mode === "awake") {
+                    const frame = player._xd_zz_pendingAwake?.frame;
+                    if (frame?.material && !frame.finished && card !== frame.material) return false;
+                }
                 return Z.shown(card, player) === (mode === "dream");
             },
             viewAs(cards, player) {
                 if (cards.length !== 1) return null;
-                return new lib.element.VCard(cards[0], [], undefined, undefined, player);
+                // 让本体自己构造最终 VCard；这里只返回“这张实体牌本来的信息”。
+                // 不再在 onuse 阶段把本体已经构造好的 result.card 整体替换掉。
+                const fact = Z.fact(cards[0], player);
+                const card = {
+                    name: fact.name,
+                    suit: fact.suit,
+                    number: fact.number,
+                    isCard: true,
+                };
+                if (fact.nature) card.nature = fact.nature;
+                return card;
             },
             onuse(result, player) {
                 const material = result.cards?.[0];
-                if (!material) return;
-                const frame = Z.begin(player, mode);
+                if (!material || !result.card) return;
+                if (mode === "awake" && Z.v2proto) {
+                    const pending = player._xd_zz_pendingAwake;
+                    const ongoing = pending && !pending.cancelled &&
+                        !pending.frame?.finished && Z.allowed(player, "awake");
+                    if ((ongoing && pending.frame.material && pending.frame.material !== material) ||
+                        (!ongoing && !(Z.allowed(player, "awake") && Z.state(player).closed > 0))) {
+                        // No closed eye, and no live first-open selection: do not run Z.begin
+                        // again even if native UI submitted a stale “醒” button.
+                        result.card.storage ||= {};
+                        result.card.storage._xd_zz_v230RejectedAwake = true;
+                        return;
+                    }
+                }
+                let frame;
+                if (mode === "awake" && player._xd_zz_pendingAwake?.frame &&
+                    !player._xd_zz_pendingAwake.cancelled && !player._xd_zz_pendingAwake.frame.finished) {
+                    frame = player._xd_zz_pendingAwake.frame;
+                    delete player._xd_zz_pendingAwake;
+                    Z.v229DisarmCancel(frame); // 已提交真实用牌，后续本体 UI 清理不可再按“取消【醒】”处理。
+                } else {
+                    frame = Z.begin(player, mode);
+                }
                 const token = Z.makeToken(player, mode, material, frame);
-                result.card = Z.makeCard(token);
-                result.cards = token.zoneTransfer ? [material] : [];
+
+                // 核心修正：保留本体原生 chooseToUse 已构造好的 card / targets / useResult 链，
+                // 只在原生牌对象上挂 token。这样翻面发生在 useCardBefore，而牌的实际效果仍由原生 useCard 结算。
+                result.card.storage ||= {};
+                result.card.storage.xd_zhuangzhou_token = token.id;
+                token.card = result.card;
+                Z.useTrace(token, "onuse已收到原生选牌结果");
+
+                // V2.7.8：严禁在 onuse 阶段清空 result.cards 或 result.card.cards。
+                // 此时本体尚未完成 useCard 事件的建立，提前清空会导致两种技能
+                // 都只能翻面、不能产生实际牌效。普通牌的“留手、虚拟使用”改在
+                // useCardBefore 成功翻面以后执行；装备/延时锦囊保留实体材料交给本体移动。
             },
             check(card) { return 8 - get.value(card); },
             ai: { order: 7, respondSha: true, respondShan: true,
                 skillTagFilter(player, tag, arg) {
                     if (arg === "respond") return false;
                     const name = tag === "respondSha" ? "sha" : "shan";
-                    return Z.allowed(player, mode) && (mode !== "awake" || Z.state(player).closed > 0) &&
-                        player.getCards("h").some(card => Z.shown(card, player) === (mode === "dream") && get.name(card, player) === name);
+                    if (!Z.allowed(player, mode)) return false;
+                    if (mode === "awake" && !Z.v228CanAwake(player, get.event?.())) return false;
+                    return player.getCards("h").some(card =>
+                        Z.shown(card, player) === (mode === "dream") && get.name(card, player) === name
+                    );
                 },
             },
         });
@@ -4725,7 +9183,8 @@ export default function () {
           + "挽驾·若" + clauses[order[2]] + "，你可以视为使用【借刀杀人】/【远交近攻】。<br>"
           + "结算后，若上文的所有前半句皆不满足，你交换之。";
       };
-      // 38/39构建暂不安装庄周；保留其源码，待最终彩蛋版本完成后再恢复。
+      // 安装庄周；先安装梦境包装，再叠加李斯的位置选择层。
+      installXdZhuangzhou(lib, game, ui, get, ai, _status);
 
       // 李斯【欺暗】：统一的“按真实位置选择别人牌”层。
       // 必须放在庄周对 Player 方法的兼容包装之后再安装，避免双方覆盖彼此。
@@ -4911,7 +9370,7 @@ export default function () {
     },
     config: {},
     help: {
-      "风雨如晦（上）": "<b>《风雨如晦（上）》·玄蝶</b><br>" + "<br>" + "原作设计：玄蝶<br>" + "无名杀代码实现：ChatGPT、清风<br>" + "扩展整理与测试：Grace_Davis<br>" + "<br>" + "其中李牧、周公的完整代码由清风提供。<br>" + "<br>" + "武将名称、技能设计及原始创意归玄蝶所有。<br>" + "扩展代码基于无名杀实现，相关代码遵循其适用的开源许可。"
+      "风雨如晦（上）": "<b>《风雨如晦（上）》·玄蝶</b><br>" + "<br>" + "作者／主创：玄蝶<br>" + "开发：ChatGPT、Claude<br>" + "壁纸与界面美术：ChatGPT<br>" + "测试与打磨：Grace_Davis<br>" + "代码贡献：清风（李牧、周公）、蝶设堂（桓温）、无名杀团队<br>" + "<br>" + "代码按其适用的开源许可使用；壁纸与界面美术不随代码授权，转载或二改请注明出处。<br>" + "部分素材来自网络，版权归原作者所有，如有侵权请联系删除。"
     },
     package: {
       character: {
@@ -4936,6 +9395,13 @@ export default function () {
           xd_limu: {
             group: "zhan_guo",
             skills: ["xd_sijiao"]
+          },
+          xd_zhuangzhou: {
+            sex: "male",
+            group: "zhan_guo",
+            hp: 3,
+            maxHp: 3,
+            skills: ["xd_mei", "xd_meng", "xd_xing"]
           },
           xd_lisi: {
             group: "qin",
@@ -5112,6 +9578,7 @@ export default function () {
           xd_chenping: "陈平",
           xd_wuqi: "吴起",
           xd_caiyan: "蔡琰",
+          xd_zhuangzhou: "庄周",
           xd_banchao: "班超",
           xd_xiean: "谢安",
           xd_liuxiu: "刘秀",
@@ -5145,6 +9612,7 @@ export default function () {
           xd_chenping: "诛吕鬼神动，安刘天地开。",
           xd_wuqi: "吾示子吾用兵也。",
           xd_caiyan: "神何殛我越荒州，处我天南海北头。",
+          xd_zhuangzhou: "彼窃钩者诛，窃国者为诸侯。",
           xd_banchao: "不敢望到酒泉郡，但愿生入玉门关。",
           xd_xiean: "雪洗虏尘静，风约楚云留。",
           xd_liuxiu: "顺迅风而纵烈火，晒白日而扫朝云。",
@@ -5178,6 +9646,7 @@ export default function () {
           xd_chenping: "游精杳漠",
           xd_wuqi: "锋推徊变",
           xd_caiyan: "三𡫛",
+          xd_zhuangzhou: "不一不也",
           xd_banchao: "定远侯",
           xd_xiean: "江左风流",
           xd_liuxiu: "龙飞白水",
@@ -7505,7 +11974,8 @@ export default function () {
                   else if (Array.isArray(info?.cards)) cards.push(...info.cards);
                 }
               } catch (e) {}
-              if (!cards.length && event?.player === player && Array.isArray(event.cards)) {
+              // 仅 lose 事件的 event.player 才是失牌者；gain/equip/addJudge 的 event.player 是获得方，不能当作失去。
+              if (!cards.length && event?.name === "lose" && event.player === player && Array.isArray(event.cards)) {
                 cards.push(...event.cards);
               }
               return [...new Set(cards.filter(card => get.itemtype(card) === "card"))];
@@ -14919,18 +19389,18 @@ export default function () {
           xd_mei: '寐',
           xd_mei_info: '转换技，阳：你失去暗置牌后，可以闭上一只眼；阴：你失去明置牌后，可以睁开一只眼。',
           xd_meng: '梦',
-          xd_meng_info:'你可以以暗置方式使用牌，然后重铸所有与之同花色的明置牌并闭上双眼，否则，你下次仅能发动【醒】。',
+          xd_meng_info:'你可以以暗置方式使用牌，然后重铸所有与之同花色的明置牌并闭上双眼，否则，你下次仅能发动【醒】。<br>以暗置方式使用：将一张明置手牌暗置并使用，牌的信息不变；装备牌和延时锦囊仍按正常结算移动至相应区域。',
           xd_xing: '醒',
-          xd_xing_info: '你可以睁开双眼并以明置方式使用牌，然后重铸所有与之同花色的暗置牌，否则，你下次仅能发动【梦】。',
+          xd_xing_info: '你可以睁开双眼并以明置方式使用牌，然后重铸所有与之同花色的暗置牌，否则，你下次仅能发动【梦】。<br>以明置方式使用：将一张暗置手牌明置并使用；装备牌和延时锦囊先明置，再离开手牌并按正常结算移动至相应区域。',
           xd_shown_cards_viewer: '明置牌'
         }
       },
-      "intro": "《风雨如晦（上）》。作者 / 游戏设计 / 主创：玄蝶。开发制作 / 技术实现：Grace_Davis；AI辅助开发 / 技术协助：ChatGPT；代码贡献：清风（李牧、周公完整代码）。部分已有武将的基础实现参考或复用无名杀本体代码，并依据玄蝶当前发布版本规则作定点调整。",
+      "intro": "《风雨如晦（上）》。玄蝶 著。ChatGPT、Claude 开发；ChatGPT 绘壁纸与界面；Grace_Davis 测试打磨；清风、蝶设堂、无名杀团队 贡献代码。",
       "name": "风雨如晦（上）",
       "author": "玄蝶",
       "diskURL": "https://mega.nz/folder/qR8THbyS#arC5aKkgewdlV5_zXzeWew",
       "forumURL": "https://www.bilibili.com/opus/1107326926420181009",
-      "version": "38/39-v07"
+      "version": ZHUANGZHOU_TEST_SCAFFOLD ? "39/39-v351-test" : "39/39"
     },
     files: {
       "character": [],
