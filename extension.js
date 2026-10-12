@@ -49,7 +49,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     }
 
     const Z = lib.xd_utils.zhuangzhou = {
-        revision: "2026-10-12-zz-v354-meng-needs-open-eye",
+        revision: "2026-10-12-zz-v355-skilltext-original",
         v2proto: true,
         v2Sessions: new WeakMap(),
         v2ActiveSessions: new Set(),
@@ -7270,16 +7270,17 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         xd_meng: "梦",
         xd_meng_info:
             "你可以以暗置方式使用牌，然后重铸所有与之同花色的明置牌并闭上双眼，" +
-            "否则，你下次仅能发动【醒】。<br>以暗置方式使用：将一张明置手牌暗置并使用，牌的信息不变；装备牌和延时锦囊仍按正常结算移动至相应区域。",
+            "否则，你下次仅能发动【醒】。",
 
         xd_xing: "醒",
         xd_xing_empty: "醒",
         xd_xing_info:
             "你可以睁开双眼并以明置方式使用牌，然后重铸所有与之同花色的暗置牌，" +
-            "否则，你下次仅能发动【梦】。<br>以明置方式使用：将一张暗置手牌明置并使用；装备牌和延时锦囊先明置，再离开手牌并按正常结算移动至相应区域。",
+            "否则，你下次仅能发动【梦】。",
         xd_zz_lock_blocker: "梦醒限制",
         xd_xing_empty_info:
-            "当没有暗置手牌可供明置时，仍可直接发动【醒】：先睁眼，再因后续无法完成而执行“否则”。",
+            "你可以睁开双眼并以明置方式使用牌，然后重铸所有与之同花色的暗置牌，" +
+            "否则，你下次仅能发动【梦】。",
     };
 
     // 【梦】继续在闭眼状态下由 BlindBroker 接管；【醒】一经发动先睁眼，再回到原生可见手牌选择。
@@ -19388,9 +19389,9 @@ export default function () {
           xd_mei: '寐',
           xd_mei_info: '转换技，阳：你失去暗置牌后，可以闭上一只眼；阴：你失去明置牌后，可以睁开一只眼。',
           xd_meng: '梦',
-          xd_meng_info:'你可以以暗置方式使用牌，然后重铸所有与之同花色的明置牌并闭上双眼，否则，你下次仅能发动【醒】。<br>以暗置方式使用：将一张明置手牌暗置并使用，牌的信息不变；装备牌和延时锦囊仍按正常结算移动至相应区域。',
+          xd_meng_info:'你可以以暗置方式使用牌，然后重铸所有与之同花色的明置牌并闭上双眼，否则，你下次仅能发动【醒】。',
           xd_xing: '醒',
-          xd_xing_info: '你可以睁开双眼并以明置方式使用牌，然后重铸所有与之同花色的暗置牌，否则，你下次仅能发动【梦】。<br>以明置方式使用：将一张暗置手牌明置并使用；装备牌和延时锦囊先明置，再离开手牌并按正常结算移动至相应区域。',
+          xd_xing_info: '你可以睁开双眼并以明置方式使用牌，然后重铸所有与之同花色的暗置牌，否则，你下次仅能发动【梦】。',
           xd_shown_cards_viewer: '明置牌'
         }
       },
@@ -19399,7 +19400,7 @@ export default function () {
       "author": "玄蝶",
       "diskURL": "https://mega.nz/folder/qR8THbyS#arC5aKkgewdlV5_zXzeWew",
       "forumURL": "https://www.bilibili.com/opus/1107326926420181009",
-      "version": ZHUANGZHOU_TEST_SCAFFOLD ? "39/39-v354-test" : "39/39"
+      "version": ZHUANGZHOU_TEST_SCAFFOLD ? "39/39-v355-test" : "39/39"
     },
     files: {
       "character": [],
