@@ -8436,7 +8436,7 @@ export default function () {
 
         const markFactionBadges = () => {
           for (const node of document.querySelectorAll(".button.character > .identity")) {
-            const label = (node.textContent || "").replace(/\\s+/g, "").trim();
+            const label = (node.textContent || "").replace(/\s+/g, "").trim();
             const entry = factionBadgeColors[label];
             if (entry) node.dataset.xdFaction = entry[0];
           }
@@ -13281,7 +13281,7 @@ export default function () {
                 useEvent._xd_qiusuo_targetTemplate = get.name(targetTemplate, false) || targetTemplate.name;
                 useEvent._xd_qiusuo_effectTemplate = get.name(effectTemplate, false) || effectTemplate.name;
                 await useEvent;
-                return true;
+                return useEvent;
               }
               return false;
             },
@@ -13377,7 +13377,13 @@ export default function () {
                   const targetTemplate = await skill.chooseTemplateCard(player, immediate, "【求索】：选择一张即时拼点牌，采用其目标规则");
                   const effectTemplate = await skill.chooseTemplateCard(player, effectCandidates, "【求索】：选择一张当前可用的即时拼点牌，采用其牌名与效果");
                   if (targetTemplate && effectTemplate && player.isIn()) {
-                    await skill.useComposite(player, outer, targetTemplate, effectTemplate);
+                    const useEvent = await skill.useComposite(player, outer, targetTemplate, effectTemplate);
+                    // 在【杀】的响应窗口中组合出【闪】时，把这张牌的结算结果交回外层询问，
+                    // 否则引擎只看到“发动了技能”，不会认定【杀】已被抵消。
+                    if (outer && useEvent && useEvent.result !== undefined) {
+                      const useSkillEvent = event.getParent("useSkill");
+                      if (useSkillEvent) useSkillEvent.result = useEvent.result;
+                    }
                   }
                 } else {
                   game.log(player, "本次【求索】的即时拼点牌均不能作为当前可用的效果，因此未组合出牌");
