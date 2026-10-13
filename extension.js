@@ -9140,7 +9140,7 @@ export default function () {
         const names = lib.xd_utils.juemoNames;
         let text = "当你使用" + items.map(item => names[item]).join("/") + "后，你可以摸一张牌并明置之，令你下次使用牌须满足剩余项";
         if (items.some(item => item !== "shown")) {
-          text += "，无剩余项则将一项改为‘明置牌’";
+          text += "，无剩余项则将一项改为“明置牌”";
         }
         return text + "。";
       };
