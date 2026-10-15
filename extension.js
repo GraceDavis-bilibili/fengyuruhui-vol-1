@@ -19247,7 +19247,8 @@ export default function () {
               var {
                 result
               } = await player.judge();
-              var suits = [get.suit(trigger.card), get.suit(card), result.suit].toUniqued();
+              // 针对周旦的牌若由多张实体牌转化而来（如丈八蛇矛、叛侵），逐张取实体牌的花色，而非转化牌本身的花色
+              var suits = [...(trigger.cards?.length ? trigger.cards.map(c => get.suit(c)) : [get.suit(trigger.card)]), get.suit(card), result.suit].toUniqued();
               var cards = [];
               game.getGlobalHistory('cardMove', evt => {
                 if (evt.name == 'lose' && evt.position == ui.discardPile || evt.name == 'cardsDiscard') {
