@@ -1,10 +1,10 @@
 /*
- * 《风雨如晦（上）》
+ * 风雨如晦（上）
  *
  * 作者／主创：玄蝶
  * 开发：ChatGPT、Claude
  * 壁纸与界面美术：ChatGPT
- * 测试、修复与操作体验打磨：Grace_Davis
+ * 测试、打磨、AI出牌策略：Grace_Davis
  * 代码贡献：清风（李牧、周公完整代码）、蝶设堂（桓温，经 ChatGPT 修改）、无名杀团队
  *   荀淑、张芝、彭羕、孟达、孟获、吴苋、罗宪、张华、王衍基于无名杀本体代码，经 ChatGPT 按本作技能修改。
  *
@@ -13,6 +13,7 @@
  */
 
 import { lib, game, ui, get, ai, _status } from "../../noname.js";
+import { installFengyuStartup, createFengyuSplashConfig } from "./assets/startup/index.js";
 export const type = "extension";
 const silentSkill = {
   forced: true,
@@ -10797,6 +10798,7 @@ function createXdLegacyPack() {
 export default function () {
   const pengyue = createXdPengyue();
   const legacy = createXdLegacyPack();
+  let fengyuStartup;
   return {
     name: "风雨如晦（上）",
     arenaReady: function () {
@@ -10810,6 +10812,8 @@ export default function () {
       legacy.normalizePackSource();
     },
     precontent: function () {
+      try { fengyuStartup = installFengyuStartup(lib, game, ui); }
+      catch (error) { console.warn("风雨如晦启动页初始化失败", error); }
       // 共享 faction ID；不覆盖先加载扩展设置的名称和颜色。
       for (const [id, name, color] of [["xia", "夏", "#252A30"], ["zhou", "周", "#C24835"], ["chun_qiu", "春秋", "#688572"], ["zhan_guo", "战国", "#896A40"], ["qin", "秦", "#1B1B1C"], ["chu", "楚", "#76283C"], ["han", "汉", "#822F1F"], ["xin", "新", "#C3A13A"]]) {
         // 按时间先后排在魏蜀吴群晋之后；已被别处注册的也挪到这个顺序里。
@@ -11838,7 +11842,8 @@ export default function () {
 
       pengyue.P.install();
     },
-    config: {},
+    config: createFengyuSplashConfig(lib, game, ui),
+    onremove: function () { fengyuStartup?.uninstall(); },
     help: {
       "风雨如晦（上）": "<b>《风雨如晦（上）》·玄蝶</b><br>" + "<br>" + "作者／主创：玄蝶<br>" + "开发：ChatGPT、Claude<br>" + "壁纸与界面美术：ChatGPT<br>" + "测试与打磨：Grace_Davis<br>" + "代码贡献：清风（李牧、周公）、蝶设堂（桓温）、无名杀团队<br>" + "<br>" + "代码按其适用的开源许可使用；壁纸与界面美术不随代码授权，转载或二改请注明出处。<br>" + "部分素材来自网络，版权归原作者所有，如有侵权请联系删除。"
     },
@@ -25627,6 +25632,8 @@ export default function () {
                 if (info.notarget) return true;
                 const range = lib.filter.selectTarget(card, player);
                 if (!range || range[0] <= 0 || range[1] === -1) return true;
+                // 借刀杀人这类“主目标＋附加目标”的牌，本体把选择数翻倍（[2,2]），其实主目标只要一个。
+                const need = info.singleCard && info.filterAddedTarget ? Math.ceil(range[0] / 2) : range[0];
                 const filterTarget = typeof event.filterTarget === "function" ? event.filterTarget : lib.filter.filterTarget;
                 return game.filterPlayer(target => {
                   try {
@@ -25634,7 +25641,7 @@ export default function () {
                   } catch (e) {
                     return false;
                   }
-                }).length >= range[0];
+                }).length >= need;
               } catch (e) {
                 return false;
               } finally {
@@ -26071,8 +26078,10 @@ export default function () {
               if (info.notarget) return true;
               const range = lib.filter.selectTarget(card, player);
               if (!range || range[0] <= 0 || range[1] === -1) return true;
+              // 借刀杀人这类“主目标＋附加目标”的牌，本体把选择数翻倍（[2,2]），其实主目标只要一个。
+              const need = info.singleCard && info.filterAddedTarget ? Math.ceil(range[0] / 2) : range[0];
               const filterTarget = typeof event.filterTarget === "function" ? event.filterTarget : lib.filter.filterTarget;
-              return game.filterPlayer(target => filterTarget(card, player, target)).length >= range[0];
+              return game.filterPlayer(target => filterTarget(card, player, target)).length >= need;
             },
             getNeedName(event, player) {
               if (event?.name !== "chooseToUse" || _status._xd_shenji_check) return;
@@ -26371,12 +26380,12 @@ export default function () {
           xd_shown_cards_viewer: '明置牌'
         }
       },
-      "intro": "《风雨如晦（上）》。玄蝶 著。ChatGPT、Claude 开发；ChatGPT 绘壁纸与界面；Grace_Davis 测试打磨；清风、蝶设堂、无名杀团队 贡献代码。",
+      "intro": "《风雨如晦（上）》。玄蝶 著。ChatGPT、Claude 开发；ChatGPT 绘壁纸与界面；Grace_Davis 打磨与AI出牌策略；清风、蝶设堂、无名杀团队 贡献代码。",
       "name": "风雨如晦（上）",
       "author": "玄蝶",
-      "diskURL": "https://mega.nz/folder/qR8THbyS#arC5aKkgewdlV5_zXzeWew",
+      "diskURL": "https://github.com/GraceDavis-bilibili/fengyuruhui-vol-1",
       "forumURL": "https://www.bilibili.com/opus/1107326926420181009",
-      "version": ZHUANGZHOU_TEST_SCAFFOLD ? "39/39-v355-test" : "39/39"
+      "version": "1.0"
     },
     files: {
       "character": [],
