@@ -57,7 +57,7 @@
 
 ## 相关页面
 
-- 玄蝶的文字版设计：https://www.bilibili.com/opus/1107326926420181009
+- 玄蝶的风雨如晦（上）发布网址：https://www.bilibili.com/opus/1107326926420181009
 - 玄蝶设计的代码化：https://github.com/GraceDavis-bilibili/fengyuruhui-vol-1
 
 ---
