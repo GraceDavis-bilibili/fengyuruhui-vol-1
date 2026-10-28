@@ -13,7 +13,7 @@
  */
 
 import { lib, game, ui, get, ai, _status } from "../../noname.js";
-import { installFengyuStartup, createFengyuSplashConfig } from "./assets/startup/index.js";
+//import { installFengyuStartup, createFengyuSplashConfig } from "./assets/startup/index.js";
 export const type = "extension";
 const silentSkill = {
   forced: true,
@@ -10812,8 +10812,8 @@ export default function () {
       legacy.normalizePackSource();
     },
     precontent: function () {
-      try { fengyuStartup = installFengyuStartup(lib, game, ui); }
-      catch (error) { console.warn("风雨如晦启动页初始化失败", error); }
+      //try { fengyuStartup = installFengyuStartup(lib, game, ui); }
+      //catch (error) { console.warn("风雨如晦启动页初始化失败", error); }
       // 共享 faction ID；不覆盖先加载扩展设置的名称和颜色。
       for (const [id, name, color] of [["xia", "夏", "#252A30"], ["zhou", "周", "#C24835"], ["chun_qiu", "春秋", "#688572"], ["zhan_guo", "战国", "#896A40"], ["qin", "秦", "#1B1B1C"], ["chu", "楚", "#76283C"], ["han", "汉", "#822F1F"], ["xin", "新", "#C3A13A"]]) {
         // 按时间先后排在魏蜀吴群晋之后；已被别处注册的也挪到这个顺序里。
@@ -11842,7 +11842,7 @@ export default function () {
 
       pengyue.P.install();
     },
-    config: createFengyuSplashConfig(lib, game, ui),
+    config: {},
     onremove: function () { fengyuStartup?.uninstall(); },
     help: {
       "风雨如晦（上）": "<b>《风雨如晦（上）》·玄蝶</b><br>" + "<br>" + "作者／主创：玄蝶<br>" + "开发：ChatGPT、Claude<br>" + "壁纸与界面美术：ChatGPT<br>" + "测试与打磨：Grace_Davis<br>" + "代码贡献：清风（李牧、周公）、蝶设堂（桓温）、无名杀团队<br>" + "<br>" + "代码按其适用的开源许可使用；壁纸与界面美术不随代码授权，转载或二改请注明出处。<br>" + "部分素材来自网络，版权归原作者所有，如有侵权请联系删除。"
