@@ -9837,6 +9837,117 @@ function createXdLegacyPack() {
         }
         return cache[key];
       },
+      // 牌名键：杀不分属性，别的牌连属性一起算（与拒绝记录的格式相同）。
+      needKey(need) {
+        return need.name + "|" + (need.name === "sha" ? "" : need.nature || "");
+      },
+      cardKey(card) {
+        const name = card?.name;
+        if (typeof name !== "string") return null;
+        return name + "|" + (name === "sha" ? "" : card.nature || "");
+      },
+      // 真人（包括联机）：拒绝不能推断没有牌，手里的牌也不按电脑的习惯推。托管时算电脑。
+      isHuman(player) {
+        return !!(player?.isOnline?.() || (!_status.auto && (player === game.me || player?.isUnderControl?.(true))));
+      },
+      // 记牌（你 11-02 12:48）：整副牌里每种牌各几张，扣掉大家都看得见的——弃牌堆、处理区、场上的装备和判定牌、
+      // 谢安自己的牌、别人明置的或谢安看过的手牌——剩下的才可能在牌堆里或别人没见过的手牌里。
+      // total / keptTotal：所有剩下的牌按张数（或按下面的留牌习惯加权）加起来，给 cardChance 归一用。
+      unseenCache: null,
+      unseenCounts(viewer) {
+        const skill = lib.skill.xd_buping_ai;
+        const discard = ui.discardPile?.childNodes, ordering = ui.ordering?.childNodes;
+        const sig = [viewer?.playerid, discard?.length ?? -1, ordering?.length ?? -1, ...game.players.map(current => current.countCards("hej"))].join(",");
+        if (skill.unseenCache?.sig === sig) return skill.unseenCache;
+        const counts = new Map();
+        for (const info of Array.isArray(lib.card.list) ? lib.card.list : []) {
+          if (!Array.isArray(info) || typeof info[2] !== "string") continue;
+          const key = skill.cardKey({ name: info[2], nature: info[3] });
+          counts.set(key, (counts.get(key) || 0) + 1);
+        }
+        const seen = card => {
+          const key = skill.cardKey(card);
+          if (key && counts.get(key) > 0) counts.set(key, counts.get(key) - 1);
+        };
+        for (const card of discard || []) seen(card);
+        for (const card of ordering || []) seen(card);
+        for (const current of game.players) {
+          for (const card of current.getCards("ej")) seen(card);
+          for (const card of current === viewer ? current.getCards("hs") : skill.knownCards(viewer, current)) seen(card);
+        }
+        let total = 0, keptTotal = 0;
+        for (const [key, n] of counts) {
+          total += n;
+          keptTotal += n * skill.keepWeight(key);
+        }
+        skill.unseenCache = { sig, counts, total, keptTotal };
+        return skill.unseenCache;
+      },
+      // 电脑角色熬过自己出牌阶段还留在手里的牌（你 11-02 12:48）：能用的锦囊、装备他自己回合多半已经用了，
+      // 留下来的多半是闪、桃、无懈和多的杀、酒。按这个习惯给每种牌加权；新摸的牌、真人的牌照常按张数。
+      keepWeights: { shan: 1, tao: 1, wuxie: 1, sha: 0.7, jiu: 0.6 },
+      keepWeight(key) {
+        return lib.skill.xd_buping_ai.keepWeights[String(key).split("|")[0]] ?? 0.25;
+      },
+      // 每名角色上一次出牌阶段结束时手里的牌（cardid），由 xd_buping_memo 记下。
+      carried: new WeakMap(),
+      // 主公谢安眼里身份没明的人（态度正好为 0）：身份局各身份的人数是公开的，按场上还没认出来的忠臣、反贼占几成，
+      // 估他是哪一边（你 11-02 12:48，先手谢安）。别的身份、别的模式照旧当中立。
+      // 内奸（你 11-03 05:38）：反贼还有两个以上时，本体的电脑内奸对主公的态度是“反贼人数＋主公少的血”，有牌就给主公，
+      // 所以算进会帮主公的人里。本轮替谢安出过真牌的人算认出来的自己人（见 provenGiver）。
+      // unknown：身份没明的人数；helpers：其中会帮主公的人数。
+      identityOdds(player) {
+        const skill = lib.skill.xd_buping_ai, none = { friend: 0, foe: 0, unknown: 0, helpers: 0 };
+        if (get.mode?.() !== "identity" || player?.identity !== "zhu" || !player.identityShown || ["purple", "stratagem"].includes(_status.mode)) return none;
+        let unknown = 0, friends = 0, foes = 0;
+        for (const current of game.filterPlayer(current => current !== player)) {
+          const att = get.attitude(player, current);
+          if (att < 0) foes++;
+          else if (skill.friendly(player, current)) friends++;
+          else unknown++;
+        }
+        if (!unknown) return none;
+        const helpers = Math.min(unknown, Math.max(0, (get.population?.("zhong") || 0) + skill.neiHelps() - friends));
+        const fan = Math.max(0, (get.population?.("fan") || 0) - foes);
+        return { friend: helpers / unknown, foe: Math.min(1, fan / unknown), unknown, helpers };
+      },
+      neiHelps() {
+        let strategy = 1;
+        try {
+          strategy = get.aiStrategy?.() ?? 1;
+        } catch (e) {}
+        return (get.population?.("fan") || 0) >= 2 && ![4, 6].includes(strategy) ? get.population?.("nei") || 0 : 0;
+      },
+      // 算不算谢安这边的人：态度明着是队友，或者身份没明、本轮替他出过真牌（电脑反贼不会这样做）。
+      friendly(player, target) {
+        const att = get.attitude(player, target);
+        return att > 0 || (att === 0 && !!lib.skill.xd_buping_ai.provenGiver(player, target)?.real);
+      },
+      // 一名角色是谢安队友、敌人的机会：态度明着的按态度，主公眼里没明的按上面的比例。
+      friendOdds(player, target) {
+        const skill = lib.skill.xd_buping_ai, att = get.attitude(player, target);
+        return skill.friendly(player, target) ? 1 : att < 0 ? 0 : skill.identityOdds(player).friend;
+      },
+      foeOdds(player, target) {
+        const skill = lib.skill.xd_buping_ai, att = get.attitude(player, target);
+        return att < 0 ? 1 : skill.friendly(player, target) ? 0 : skill.identityOdds(player).foe;
+      },
+      // 本轮替谢安出过牌的电脑角色（你 11-03 05:38，接龙）：出过真牌的就当自己人；只出过临时牌的至少不是反贼
+      // （电脑反贼临时牌也不给主公），他明置的临时牌照样会给。真人不推。
+      givers: new WeakMap(),
+      noteGiver(viewer, giver, cards) {
+        const skill = lib.skill.xd_buping_ai;
+        if (!viewer || !giver || viewer === giver || skill.isHuman(giver)) return;
+        let book = skill.givers.get(viewer);
+        if (!book) skill.givers.set(viewer, (book = new Map()));
+        const round = game.roundNumber ?? 0, old = book.get(giver);
+        const real = (cards || []).some(card => !skill.wasTemp(card, giver));
+        book.set(giver, { round, real: real || (old?.round === round && !!old.real) });
+      },
+      provenGiver(viewer, giver) {
+        const entry = lib.skill.xd_buping_ai.givers.get(viewer)?.get(giver);
+        return entry && entry.round === (game.roundNumber ?? 0) ? entry : null;
+      },
       // 被问的人给不给（电脑供牌人用）：回合末就要弃的临时牌，给出去不亏还能摸牌，不是敌人就给。
       supplyScore(giver, source, card, need) {
         const att = get.attitude(giver, source);
@@ -9856,13 +9967,17 @@ function createXdLegacyPack() {
       // 这些牌还在他手里时，就不会是他拒绝过的牌，别的牌的把握按比例变大。新摸的牌照常估。敌人、中立拒绝不说明什么。
       refused: new WeakMap(),
       noteRefusal(viewer, target, need) {
-        if (!viewer || !target || target === viewer || get.attitude(viewer, target) <= 0) return;
+        if (!viewer || !target || target === viewer) return;
         const skill = lib.skill.xd_buping_ai;
+        // 主公眼里身份没明的人（你 11-03）：会帮主公的人有就给，所以他拒绝说明“如果他是帮手，他没有这张牌”；
+        // 反贼拒绝本来就不算进把握。只看公开的“拒绝了”，不看他真实的态度。
+        const pooled = get.attitude(viewer, target) === 0 && !skill.friendly(viewer, target) && skill.identityOdds(viewer).friend > 0;
+        if (!pooled && !skill.friendly(viewer, target)) return;
         // 真人拒绝不能推断没有牌；规则禁止响应时，拒绝也不提供牌名信息。
         if (target.isOnline?.() || (!_status.auto && (target === game.me || target.isUnderControl?.(true)))) return;
         if (!skill.canSupplyNeed(viewer, target, need)) return;
         const expected = get.autoViewAs({ name: need.name, nature: need.nature, isCard: true }, 'unsure');
-        if (!(skill.supplyScore(target, viewer, expected) > 0)) return;
+        if (!pooled && !(skill.supplyScore(target, viewer, expected) > 0)) return;
         let book = skill.refused.get(viewer);
         if (!book) skill.refused.set(viewer, (book = new Map()));
         const known = skill.knownCards(viewer, target);
@@ -9872,18 +9987,20 @@ function createXdLegacyPack() {
         list.push({ key: need.name + "|" + (need.name === "sha" ? "" : need.nature || ""), ids: new Set(hand) });
         book.set(target, list);
       },
-      // 一张没见过的手牌是这种牌的机会：按整副牌的比例，扣掉他拿着这张牌时拒绝过的牌。
+      // 一张没见过的手牌是这种牌的机会：按还没出现过的张数（记牌，见 unseenCounts），扣掉他拿着这张牌时拒绝过的牌；
+      // 电脑角色熬过自己出牌阶段的牌，按“留下来的多半是闪、桃、无懈和多的杀”加权（你 11-02 12:48）。
       cardChance(viewer, target, card, need) {
-        const skill = lib.skill.xd_buping_ai, key = need.name + "|" + (need.name === "sha" ? "" : need.nature || "");
+        const skill = lib.skill.xd_buping_ai, key = skill.needKey(need);
         const excluded = new Set();
         for (const entry of skill.refused.get(viewer)?.get(target) || []) if (card?.cardid && entry.ids.has(card.cardid)) excluded.add(entry.key);
         if (excluded.has(key)) return 0;
-        let rest = 1;
-        for (const other of excluded) {
-          const [name, nature] = other.split("|");
-          rest -= skill.freq({ name, nature: nature || undefined });
-        }
-        return Math.min(1, skill.freq(need) / Math.max(0.05, rest));
+        const data = skill.unseenCounts(viewer);
+        const carried = !!card?.cardid && !skill.isHuman(target) && !!skill.carried.get(target)?.has(card.cardid);
+        const weight = k => (carried ? skill.keepWeight(k) : 1);
+        let total = carried ? data.keptTotal : data.total;
+        for (const other of excluded) total -= (data.counts.get(other) || 0) * weight(other);
+        if (!(total > 0)) return 0;
+        return Math.min(1, ((data.counts.get(key) || 0) * weight(key)) / total);
       },
       unknownChance(viewer, target, need) {
         const skill = lib.skill.xd_buping_ai, known = skill.knownCards(viewer, target);
@@ -9900,7 +10017,13 @@ function createXdLegacyPack() {
         if (att < 0) return 0;
         const skill = lib.skill.xd_buping_ai, known = skill.knownCards(viewer, target);
         const fit = known.filter(card => skill.fits(card, target, need) && skill.canSupply(viewer, target, card, need) && skill.supplyScore(target, viewer, card) > 0);
-        if (att === 0) return fit.some(card => skill.isTemp(card, target)) ? 0.6 : 0;
+        if (att === 0 && !skill.friendly(viewer, target)) {
+          // 本轮替谢安出过临时牌的人不是反贼，他明置的临时牌一定给（你 11-03 05:38，接龙）。
+          const temp = fit.some(card => skill.isTemp(card, target)) ? (skill.provenGiver(viewer, target) ? 1 : 0.6) : 0;
+          // 主公谢安（你 11-02 12:48）：身份没明的人里有还没认出来的忠臣（反贼多时还有内奸），他们有这张牌就会给。
+          const q = skill.identityOdds(viewer).friend;
+          return q > 0 ? Math.max(temp, q * skill.holdChance(viewer, target, need)) : temp;
+        }
         if (fit.length) return target.isOnline?.() || (!_status.auto && (target === game.me || target.isUnderControl?.(true))) ? 0.95 : 1;
         const expected = get.autoViewAs({ name: need.name, nature: need.nature, isCard: true }, 'unsure');
         if (!(skill.supplyScore(target, viewer, expected) > 0)) return 0;
@@ -9913,6 +10036,37 @@ function createXdLegacyPack() {
         if (known.some(card => skill.fits(card, target, need))) return 1;
         return skill.unknownChance(viewer, target, need);
       },
+      // 有人给的把握（你 11-03 05:38）。主公眼里身份没明的人：会帮他的有几个是公开的（没认出来的忠臣、反贼多时的内奸），
+      // 只是不知道是其中哪几个。按每种可能平均算，比把每个人各算几成、互不相干更准（首回合问杀：几个帮手都没有杀才会失败）。
+      askOdds(player, plan, need) {
+        const skill = lib.skill.xd_buping_ai, odds = skill.identityOdds(player);
+        let miss = 1;
+        const holds = [];
+        for (const current of plan.queue) {
+          const pooled = odds.friend > 0 && get.attitude(player, current) === 0 && !skill.friendly(player, current) && !skill.provenGiver(player, current) &&
+            !skill.knownCards(player, current).some(card => skill.fits(card, current, need) && skill.isTemp(card, current));
+          if (pooled) holds.push(skill.holdChance(player, current, need));
+          else miss *= 1 - (plan.chance.get(current) || 0);
+        }
+        if (holds.length) miss *= skill.poolMiss(holds, (odds.helpers * holds.length) / odds.unknown);
+        return 1 - miss;
+      },
+      // n 个人里恰好有 g 个会帮忙（g 可以带小数，按两头插值）、帮忙的人都没有这张牌的机会：各种“是哪几个人”的情形平均。
+      poolMiss(holds, g) {
+        const n = holds.length;
+        g = Math.max(0, Math.min(n, g));
+        if (!(g > 0)) return 1;
+        const e = [1];
+        for (let k = 1; k <= n; k++) e[k] = 0;
+        for (const h of holds) for (let k = n; k >= 1; k--) e[k] += e[k - 1] * (1 - h);
+        const avg = k => {
+          let c = 1;
+          for (let i = 1; i <= k; i++) c = (c * (n - k + i)) / i;
+          return e[k] / c;
+        };
+        const lo = Math.floor(g), w = g - lo;
+        return w > 0 ? (1 - w) * avg(lo) + w * avg(lo + 1) : avg(lo);
+      },
       // 每次都挨个问所有其他角色，越可能给的越往后，让前面的拒绝都算进 X（你 10-24 09:40、10:42）：
       // 敌人 → 中立 → 队友（把握低的、牌少的先问）→ 明置着这张牌的人（临时牌的优先）收尾。
       // 有人给了就在那里成功；全部拒绝时 X 涨到其他角色数。X 已经涨不动时，直接先问最可能给的。
@@ -9922,9 +10076,11 @@ function createXdLegacyPack() {
         const chance = new Map(others.map(current => [current, skill.chance(player, current, need)]));
         const tempCopy = current => skill.knownCards(player, current).some(card => skill.fits(card, current, need) && skill.isTemp(card, current)) ? 1 : 0;
         const sure = others.filter(current => chance.get(current) >= 0.95).sort((a, b) => tempCopy(b) - tempCopy(a));
-        const side = current => { const att = get.attitude(player, current); return att < 0 ? 0 : att === 0 ? 1 : 2; };
+        const side = current => { const att = get.attitude(player, current); return att < 0 ? 0 : skill.friendly(player, current) ? 2 : 1; };
+        // 这张牌要打的人放在同一边的最后问（你 11-03 05:38 的试探杀：别让身份没明的忠臣替谢安出杀打自己）。
+        const aimed = current => ((need.targets || []).includes(current) ? 1 : 0);
         const before = others.filter(current => !sure.includes(current))
-          .sort((a, b) => side(a) - side(b) || chance.get(a) - chance.get(b) || skill.holdChance(player, a, need) - skill.holdChance(player, b, need) || a.countCards("h") - b.countCards("h"));
+          .sort((a, b) => side(a) - side(b) || aimed(a) - aimed(b) || chance.get(a) - chance.get(b) || skill.holdChance(player, a, need) - skill.holdChance(player, b, need) || a.countCards("h") - b.countCards("h"));
         const x = lib.skill.xd_buping.getX(player);
         if (sure.length ? before.length <= x : others.length <= x) {
           return { queue: sure.concat(before.slice().sort((a, b) => chance.get(b) - chance.get(a))), chance };
@@ -9935,7 +10091,7 @@ function createXdLegacyPack() {
       // （电脑敌人不会，真人可能会）。队友照常按“有就给”算。
       worstPlan(player, need, plan) {
         const skill = lib.skill.xd_buping_ai;
-        const chance = new Map(plan.queue.map(current => [current, get.attitude(player, current) > 0 ? plan.chance.get(current) : Math.max(plan.chance.get(current), skill.holdChance(player, current, need))]));
+        const chance = new Map(plan.queue.map(current => [current, skill.friendly(player, current) ? plan.chance.get(current) : Math.max(plan.chance.get(current), skill.holdChance(player, current, need))]));
         return { queue: plan.queue, chance };
       },
       // 这一问下来 X 预计涨几（第 k 个人给时，前面 k−1 个拒绝；全部拒绝时涨到人数）。
@@ -9969,7 +10125,8 @@ function createXdLegacyPack() {
           const value = get.value(card, player);
           if (skill.isTemp(card, player)) return 30 - value;
           if (skill.keep(player, card)) return -value;
-          if (skill.defense(player, card)) return 8 - value;
+          // 你 11-03 06:12：酒和桃、闪、无懈一样算防御牌；连弩是谢安的命根子。都排在废牌后面弃（和 spareCards 一致）。
+          if (skill.valuable(player, card)) return 8 - value;
           return 15 - value;
         } finally {
           skill.raw--;
@@ -9989,20 +10146,27 @@ function createXdLegacyPack() {
         return lib.skill.xd_buping_ai.laterList(from).some(test);
       },
       // 出回合要留几次（你 10-24 11:41、11:43）。次数每轮重置，所以只数本轮剩下的敌人回合：
-      // 每个敌人回合按“会来要牌（杀他要闪、对己方用锦囊要无懈）”的机会加起来，平时六成，2 血七成半，
-      // 1 血九成；再减去手里的真闪、真无懈。队友手里没牌时借不到，不留。
-      // discard：按“这一问全部被拒、弃了这么多张牌之后”算，弃牌可能把真闪、真无懈也弃掉。
+      // 每个敌人回合按“会来杀他（要闪）、用南蛮决斗（要杀）”的机会加起来，平时六成，2 血七成半，
+      // 1 血九成；再减去手里的真闪。队友手里没牌时借不到，不留。
+      // 无懈不留（你 11-02 12:49）：队友有无懈时本体会问到他，他自己就出了，用不着谢安去借。
+      // 主公眼里身份没明的人，按还没认出来的反贼、忠臣的比例算敌人、算借得到的牌（见 identityOdds）。
+      // discard：按“这一问全部被拒、弃了这么多张牌之后”算，弃牌可能把真闪也弃掉。
+      laterFoes(player) {
+        const skill = lib.skill.xd_buping_ai;
+        return skill.laterList(_status.currentPhase || player).filter(current => current !== player).reduce((sum, current) => sum + skill.foeOdds(player, current), 0);
+      },
+      supplyCards(player) {
+        const skill = lib.skill.xd_buping_ai;
+        return game.filterPlayer(current => current !== player).reduce((sum, current) => sum + skill.friendOdds(player, current) * current.countCards("h"), 0);
+      },
+      realShans(player, discard = 0) {
+        const skill = lib.skill.xd_buping_ai, lost = discard > 0 ? new Set(skill.failSet(player, discard)) : null;
+        return player.getCards("h", card => get.name(card, player) === "shan" && !skill.isTemp(card, player) && !lost?.has(card)).length;
+      },
       reserveNeed(player, discard = 0) {
         const skill = lib.skill.xd_buping_ai;
         const chance = player.hp <= 1 ? 0.9 : player.hp <= 2 ? 0.75 : 0.6;
-        const enemies = skill.laterList(_status.currentPhase || player).filter(current => current !== player && get.attitude(player, current) < 0).length;
-        let real = player.getCards("h", card => ["shan", "wuxie"].includes(get.name(card, player)) && !skill.isTemp(card, player)).length;
-        if (discard > 0) {
-          const lost = new Set(skill.failSet(player, discard));
-          real = player.getCards('h', card => ['shan', 'wuxie'].includes(get.name(card, player)) && !skill.isTemp(card, player) && !lost.has(card)).length;
-        }
-        const supply = game.filterPlayer(current => current !== player && get.attitude(player, current) > 0).reduce((sum, current) => sum + current.countCards("h"), 0);
-        return Math.max(0, Math.min(supply, Math.round(enemies * chance - real)));
+        return Math.max(0, Math.min(skill.supplyCards(player), Math.round(skill.laterFoes(player) * chance - skill.realShans(player, discard))));
       },
       // 出牌阶段实际留几次（你 10-24 12:50：疯狂抢占先机更划算）：按上面的算法，但最多 3 次，
       // 而且不超过本回合可用次数的 4/7。本回合可用次数＝出牌阶段开始时剩下的，加上回合内 X 涨出来的。
@@ -10024,6 +10188,73 @@ function createXdLegacyPack() {
         // 取代 v395 的“本回合可用次数的 4/7”。内奸没有盟友，出回合一次都不留。
         if (skill.isNei(player)) return 0;
         return Math.min(skill.reserveNeed(player, discard), 2, Math.floor(((state.x + 1) * 2) / 8));
+      },
+      // 碰运气（把握不到一半）用的次数门槛（你 11-02 12:48，先手谢安）：先手的次数要管后面整轮，本轮后面
+      // 每个敌人回合都可能来杀他，各留一次，减去手里的真闪；不少于 reserveKeep。队友手里没牌时借不到，不多留。
+      // 内奸照旧（你 10-24：超出 reserveKeep 的都要用掉）。
+      softKeep(player, outer, discard = 0) {
+        const skill = lib.skill.xd_buping_ai, hard = skill.reserveKeep(player, outer, discard);
+        if (skill.isNei(player) || !(skill.supplyCards(player) >= 1)) return hard;
+        return Math.max(hard, Math.round(skill.laterFoes(player)) - skill.realShans(player, discard));
+      },
+      // 这一问全部被拒时会弃掉救命的真桃，而己方有人只剩 1 血（你 11-02 12:48）。
+      lifeline(player, x) {
+        const skill = lib.skill.xd_buping_ai;
+        if (!game.hasPlayer(current => (current === player || get.attitude(player, current) > 0) && current.hp <= 1)) return false;
+        return skill.failSet(player, x).some(card => get.name(card, player) === "tao" && !skill.isTemp(card, player));
+      },
+      // 拿什么去赌（你 11-03 05:38、05:57、06:06、06:07、06:12）：进攻牌在手里就要出完；出不掉的牌里，桃、闪、无懈、酒
+      // 这些防御牌超过手牌上限的部分是“多”的（回合末本来就要弃），临时牌、用不上的废牌也是多的。这一问全部被拒时要弃的
+      // 张数不超过多的牌，队友可能没有的牌也敢问（养 X、碰运气）；超过了就会弃到能留在手里的防御牌，只问大概率有的和
+      // 队友铁定有的。防具、+1 马、连弩和不该弃的牌（乐不思蜀等）不算多的。防御牌越多越要护着，和后面有几个敌人没关系。
+      guardNames: ["tao", "shan", "wuxie", "jiu"],
+      valuable(player, card) {
+        const skill = lib.skill.xd_buping_ai;
+        if (skill.isTemp(card, player)) return false;
+        const name = get.name(card, player);
+        if (skill.guardNames.includes(name) || name === "zhuge" || skill.keep(player, card)) return true;
+        return (get.position(card) === "e" || get.type(card, null, player) === "equip") && ["equip2", "equip3"].includes(get.subtype(card, player));
+      },
+      spareCards(player) {
+        const skill = lib.skill.xd_buping_ai;
+        const cards = player.getCards("he", card => lib.filter.cardDiscardable(card, player, "chooseToDiscard"));
+        const kept = cards.filter(card => skill.valuable(player, card));
+        const keptHand = kept.filter(card => get.position(card) === "h").length;
+        let limit = player.hp;
+        try {
+          if (typeof player.getHandcardLimit === "function") limit = player.getHandcardLimit();
+        } catch (e) {}
+        return cards.length - kept.length + Math.max(0, keptHand - Math.max(0, limit));
+      },
+      // 这一问全部被拒（弃 x 张，牌不够时全弃）会弃到多的牌以外的牌。
+      guardAtStake(player, x) {
+        const skill = lib.skill.xd_buping_ai;
+        if (!(x > 0)) return false;
+        const count = player.countCards("he", card => lib.filter.cardDiscardable(card, player, "chooseToDiscard"));
+        return Math.min(x, count) > skill.spareCards(player);
+      },
+      // 多的牌不够时只问的把握（你 11-03 05:38：“大概率有”的牌，比如首回合试探的杀）。
+      sureLine: 0.8,
+      // 试探的杀（你 11-03 05:38）：主公眼里够得着的人身份都没明时，本体算杀谁都是 0，不肯出杀。可没明身份的人里反贼多，
+      // 借来的杀照样有用；首回合忠臣、内奸多半拿着杀，前面的人拒绝让 X 涨，成了双方各摸两张。所以照一张普通的牌算
+      // （probeWorth），挑目标见 probeTargetScore。只在反贼占的比例比会帮主公的人高时这样（八人局 4/7 比 3/7）。
+      probeWorth: 1,
+      probeSha(player, need, card) {
+        const skill = lib.skill.xd_buping_ai;
+        if (need?.name !== "sha") return false;
+        const odds = skill.identityOdds(player);
+        if (!(odds.foe > odds.friend)) return false;
+        return game.hasPlayer(target => target !== player && get.attitude(player, target) === 0 && !skill.friendly(player, target) &&
+          (typeof player.canUse !== "function" || player.canUse(card, target)));
+      },
+      // 布枰借来的牌挑目标（出牌阶段）：本体打分不到 0 的身份没明的人，按反贼占几成给正分（牌少的优先）。
+      probeTargetScore(player, target, card, base) {
+        const skill = lib.skill.xd_buping_ai;
+        if (!player?.hasSkill?.("xd_buping") || !target || target === player || !(base <= 0) || base < -0.5 || get.name(card, player) !== "sha") return base;
+        if (get.attitude(player, target) !== 0 || skill.friendly(player, target)) return base;
+        const odds = skill.identityOdds(player);
+        if (!(odds.foe > odds.friend)) return base;
+        return 0.2 + odds.foe - odds.friend - target.countCards("h") / 100;
       },
       knownShans(player, event) {
         const skill = lib.skill.xd_buping_ai, state = lib.skill.xd_buping.getState(player);
@@ -10070,9 +10301,7 @@ function createXdLegacyPack() {
       normalScore(player, need, outer, plan, left, surplus) {
         const skill = lib.skill.xd_buping_ai;
         if (!plan.queue.length) return [0, 0];
-        let miss = 1;
-        for (const current of plan.queue) miss *= 1 - plan.chance.get(current);
-        const p = 1 - miss, x = lib.skill.xd_buping.getX(player);
+        const p = skill.askOdds(player, plan, need), x = lib.skill.xd_buping.getX(player);
         const cost = (surplus ? 0.1 : skill.chargeCost(player, outer)) + 0.25 * skill.failCost(player, Math.max(x, plan.queue.length));
         let score = p * (1 + skill.gainShare(player, outer, left)) - (1 - p) * cost + skill.growthWorth * skill.growth(plan, x);
         // 明置着的临时牌回合末就弃，能用就用掉。
@@ -10163,6 +10392,8 @@ function createXdLegacyPack() {
       evaluate(player, need, outer) {
         const skill = lib.skill.xd_buping_ai, phase = outer?.type === "phase";
         if (skill.savesFoe(player, outer)) return { score: 0, mode: null };
+        // 无懈不借（你 11-02 12:49）：队友有无懈时本体会问到他，他自己就出了；谢安去借，最多多摸一张，没人有就白丢一次。
+        if (need.name === "wuxie") return { score: 0, mode: null };
         const state = lib.skill.xd_buping.getState(player), left = state.x + 1 - state.used;
         if (left <= 0) return { score: 0, mode: null };
         const plan = skill.normalQueue(player, need);
@@ -10178,6 +10409,8 @@ function createXdLegacyPack() {
         let value = phase ? player.getUseValue(card) : 1;
         // 谢安自己没装连弩：连弩值得挨个问（你 10-24 10:42：借到之后连续布枰要杀）。
         if (phase && skill.changesGame(player, need)) value = Math.max(value, 20);
+        // 首回合试探的杀（你 11-03 05:38，见 probeSha）。
+        if (phase && !(value > 0) && skill.probeSha(player, need, card)) value = skill.probeWorth;
         if (!(value > 0)) return { score: 0, mode: null };
         // 出牌阶段用掉这次后，剩下的够不够留给回合外（见 reserveNeed）。前面一定会拒绝的人能让 X 涨、
         // 本轮次数跟着涨回来的，也算在剩下的里面。
@@ -10192,28 +10425,42 @@ function createXdLegacyPack() {
         const keepCost = dip ? 0.9 * Math.min(1, 4 / value) * (skill.danger(player) ? 1.6 : 1) : 0;
         // 有人可能给（把握至少四分之一）时是一次正常的借牌；把握太低时主要是养 X，等别的牌都出完再说，
         // 而且全部拒绝时要弃的牌里不能有不该弃的，也不动用要留的次数。
-        const normal = score - keepCost > 0 && p >= 0.25;
         const x = lib.skill.xd_buping.getX(player), top = Math.max(x, plan.queue.length);
+        // 你 11-02 12:48：X 大时一次失败要弃光手牌。己方有人只剩 1 血时，手里救命的真桃不为没十足把握的借牌赌掉。
+        if (p < 0.9 && skill.lifeline(player, top)) return { score: 0, mode: null };
+        // 你 11-03（05:38–06:12）：这一问全部被拒时要弃的牌超过“多”的牌（临时牌、废牌、超过手牌上限的防御牌，见
+        // spareCards），就不拿队友可能没有的牌去赌：只问大概率有的（把握八成以上：试探的杀、队友明置着的牌、接龙），
+        // 碰运气不做。多的牌够时照旧：进攻牌先出完，再拿多的牌放开赌。内奸照旧（你 10-24：多出来的次数哪怕丢光也要用掉）。
+        // 多的牌不够、但比现在的 X 多时，只拿多的牌养 X（你 05:57“拿废牌去赌养X”）：被拒到要弃的张数等于多的牌就停下
+        // （repeatChoice），所以这一问只算前 budget 个人，X 最多涨到 budget，防御牌一张不丢。
+        const guarded = phase && !skill.isNei(player) && skill.guardAtStake(player, top);
+        const budget = guarded ? skill.spareCards(player) : 0, bounded = guarded && budget > x;
+        const growPlan = bounded ? { queue: plan.queue.slice(0, budget), chance: plan.chance } : plan;
+        let normal = score - keepCost > 0 && p >= (guarded ? skill.sureLine : 0.25);
+        // 你 11-02 12:48（先手谢安）：把握不到一半的借牌是碰运气，只用真正多出来的次数（见 softKeep）；
+        // 把握过半的借牌（接龙、常见的杀）照旧只守 reserveKeep 那条底线（你定的“抢占先机”）。
+        if (normal && phase && !dip && p < 0.5 && left + sureGrowth - skill.softKeep(player, outer) < 1) normal = false;
         // 养 X 时不该弃的牌按你 10-24 12:36 的规则判断（v395）：己方有人危险时的桃、场上急用的无懈、乐不思蜀等不拿来养。
-        const growth = skill.growth(plan, x);
-        let invest = phase && !normal && !dip && growth > 0 && score + (skill.investWorth - skill.growthWorth) * growth > 0 && !skill.gambleRisk(player, top).block;
+        const growth = guarded && !bounded ? 0 : skill.growth(growPlan, x);
+        let invest = phase && !normal && !dip && growth > 0 && score + (skill.investWorth - skill.growthWorth) * growth > 0 && !skill.gambleRisk(player, bounded ? budget : top).block;
         // 爆发（你 10-24 12:10、12:31、12:36）：本轮多出来的次数还有两次以上，把握低也去问队友要好牌，
         // 博不博看 gambleScore。排到最后（0.5），先把自己能用的牌出完，失败时弃得少。
-        // 多出来的次数按“失败弃牌后”算：手里的真闪、真无懈可能一起弃掉，到时要留的次数会变多。
-        const spareAfter = phase ? left + sureGrowth - skill.reserveKeep(player, outer, top) : 0;
+        // 多出来的次数按“失败弃牌后”算：手里的真闪可能一起弃掉，到时要留的次数会变多。
+        // 你 11-02 12:48：碰运气只用真正多出来的次数，后面每个敌人回合各留一次（softKeep，内奸照旧）。
+        const spareAfter = phase ? left + sureGrowth - skill.softKeep(player, outer, top) : 0;
         // 内奸谢安（你 10-24 13:11、13:15）：超出要留的次数，哪怕手里的牌丢光也要用掉。只要 X 还能涨、或有人可能给就问；
         // 仍不拿来冒险的只有己方有人危险时的桃、场上急用的无懈、乐不思蜀等。
         if (phase && !normal && !invest && !dip && skill.isNei(player) && !skill.gambleRisk(player, top).block) {
           if (p > 0) return { score: 50 + Math.min(49, value * p), mode: "burst" };
           if (growth > 0) invest = true;
         }
-        const burst = phase && !normal && !invest && spareAfter >= 2 && p > 0 && skill.gambleScore(player, outer, p, spareAfter, top, left) > 0;
+        const burst = phase && !normal && !invest && !guarded && spareAfter >= 2 && p > 0 && skill.gambleScore(player, outer, p, spareAfter, top, left) > 0;
         if (normal) return { score: 100 + value * (score - keepCost), mode: "normal" };
         if (burst) return { score: 50 + Math.min(49, value * p), mode: "burst" };
         if (!invest) return { score: 0, mode: null };
         // 养 X 挑牌名（你 10-24 12:00）：要“少见”又“给了也赚”的牌。少见，多数人是真没有，拒绝了 X 照样涨；
         // 真有人（比如想拦着 X 的敌人）给了，谢安拿到的也是好牌。按最坏的情况算 X 能涨几、有人给的机会多大。
-        const worst = skill.worstPlan(player, need, plan);
+        const worst = skill.worstPlan(player, need, growPlan);
         let miss = 1;
         for (const current of worst.queue) miss *= 1 - worst.chance.get(current);
         const probe = value * (skill.growth(worst, x) + 1 - miss);
@@ -10227,6 +10474,7 @@ function createXdLegacyPack() {
       exposeGiver(giver, source, cards, use) {
         if (!giver || !source || giver === source) return;
         const skill = lib.skill.xd_buping_ai;
+        skill.noteGiver(source, giver, cards);
         if (!cards.length || cards.every(card => skill.wasTemp(card, giver))) return;
         const card = use?.card || cards[0];
         if (get.name(card) === "wuxie") return;
@@ -10295,10 +10543,19 @@ function createXdLegacyPack() {
         // 计划里没有可问的人时（正常不会发生）：先问最可能给的。
         return (plan?.chance.get(target) ?? 0) * 5 + get.attitude(player, target) / 100;
       },
-      // 被拒绝后：计划里还有人就重复（结束就要弃 X 张，重复不花什么），否则结束。
+      // 被拒绝后：计划里还有人就重复（结束就要弃 X 张，X 到顶后重复不花什么），否则结束。
+      // 你 11-03（05:57、06:07、06:12）：出牌阶段再被拒一次就要弃到多的牌以外（防御牌），而现在停下只弃多的牌时，
+      // 剩下的人大概率会给（八成以上）才接着问，否则停下：拿多的牌养 X 到这里为止。现在停下也要弃到防御牌时，
+      // 接着问还有机会一张不弃，照旧问下去。回合外、内奸照旧。
       repeatChoice(player, evt) {
         const skill = lib.skill.xd_buping_ai, plan = skill.planFor(player, evt);
-        return plan && skill.nextAsk(plan, evt.specified) ? 1 : 0;
+        if (!plan || !skill.nextAsk(plan, evt.specified)) return 0;
+        if (evt.xd_buping_outer?.type !== "phase" || skill.isNei(player)) return 1;
+        const count = player.countCards("he", card => lib.filter.cardDiscardable(card, player, "chooseToDiscard"));
+        const budget = skill.spareCards(player), x = lib.skill.xd_buping.getX(player);
+        if (Math.min(Math.max(x, evt.specified.length + 1), count) <= budget || Math.min(x, count) > budget) return 1;
+        const rest = plan.queue.filter(current => current.isIn() && !evt.specified.includes(current));
+        return skill.askOdds(player, { queue: rest, chance: plan.chance }, evt.xd_buping_need) >= skill.sureLine ? 1 : 0;
       },
       // 谢安拿到就能改写战局的牌（你 10-24 09:40 举的例子；以后要加就加在这里）。
       // 用布枰借：自己没装连弩就借，不看手里有几张杀（你 10-24 10:02：布枰成功双方各摸两张，很快就有杀）。
@@ -10383,6 +10640,21 @@ function createXdLegacyPack() {
       }
     };
     game.addGlobalSkill("xd_buping_ai");
+    // 记下每名角色出牌阶段结束时手里的牌（你 11-02 12:48，谢安记牌用）：熬过出牌阶段的牌，电脑多半是留着不用的闪、桃、无懈、杀。
+    lib.skill.xd_buping_memo = {
+      charlotte: true,
+      silent: true,
+      forced: true,
+      popup: false,
+      trigger: { player: "phaseUseEnd" },
+      filter(event, player) {
+        return game.hasPlayer(current => current !== player && current.hasSkill("xd_buping"));
+      },
+      content(event, trigger, player) {
+        lib.skill.xd_buping_ai.carried.set(player, new Set(player.getCards("h").map(card => card.cardid).filter(Boolean)));
+      }
+    };
+    game.addGlobalSkill("xd_buping_memo");
     // AI（陈平【解渡】【游刃】，你 10-26 18:16、18:38）。只管电脑，不改规则，只用公开信息和自己的手牌。
     // 记账：差 = 恰好摸两张的次数 − 使用基本牌的次数。差为 0 时游刃生效（平），否则不生效（仄）。
     // 一、出牌阶段规划：把手里能出的基本牌、锦囊的先后都试一遍（深度优先），每一步可以：
@@ -21287,6 +21559,19 @@ export default function () {
                   popname: true,
                   log: false,
                   sourceSkill: "xd_buping",
+                  // 电脑挑目标：照本体原来的打分；出牌阶段试探的杀，身份没明的人按反贼占几成给正分（你 11-03 05:38）。
+                  ai2(target, targets) {
+                    const event = _status.event, original = event?._backup?.ai2;
+                    let base = 0;
+                    try {
+                      base = typeof original === "function" ? original.apply(this, arguments) : get.cacheEffectUse(target, targets);
+                    } catch (e) {}
+                    try {
+                      return event?.type === "phase" ? lib.skill.xd_buping_ai.probeTargetScore(get.player(), target, get.card(), base) : base;
+                    } catch (e) {
+                      return base;
+                    }
+                  },
                   viewAs: {
                     name: link[2] || "sha",
                     nature: link[2] === 'sha' ? undefined : link[3],
@@ -21306,7 +21591,10 @@ export default function () {
             },
             // 本体只去问“手里有【无懈可击】、或技能能当无懈用”的人（player.hasWuxie），下面的 hiddenCard
             // 只在已经弹出使用询问时才成立，所以没有真无懈时谢安从来不会被问到。本轮还有次数时告诉本体“能出”。
+            // 电脑谢安不借无懈（你 11-02 12:49）：队友有无懈时本体会问到他，他自己就出了。真人谢安照旧会被问。
             hiddenWuxie(player, info) {
+              const ai = lib.skill.xd_buping_ai;
+              if (ai?.isHuman && !ai.isHuman(player)) return false;
               const state = lib.skill.xd_buping.getState(player);
               return state.used < state.x + 1 && game.hasPlayer(current => current !== player && current.isIn());
             },
