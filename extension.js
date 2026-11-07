@@ -9263,6 +9263,274 @@ function createXdLegacyPack() {
       }
     };
     lib.skill.xd_ai_wuxian.install();
+    // AI（所有电脑）：勾践【投醪】（规则、文字原样不动）。
+    // 投醪：每轮限X次，你需要使用【杀】时使用牌无效，你摸牌可改为增加等量攻击频率或额定摸牌数。（X为两者之差）
+    // 代码里：攻击频率 a 初值 1、额定摸牌数 d 初值 2，X＝|a−d|。正面（把一次摸牌改成长期属性）和负面（之后“此刻能用杀”时
+    // 用的牌无效）共用本轮的 X 次；负面只在本轮用过正面之后才有，每轮开始清零。
+    // 原来的电脑只有一条“别把 X 拉大”：头两回合把摸牌阶段换成攻击、摸牌各一次，之后几乎不再成长；代价开着时也不会躲。
+    // 现在按账（单位：张）：
+    //   1. 每次摸牌，照常摸、换成攻击频率、换成额定摸牌数三样比：
+    //      照常摸＝这几张牌现在的价（手里牌少、血少时更值钱）；
+    //      换＝以后每回合多出来的价 × 往后几个回合（每回合打 0.85 折；场上人越少、自己血越少，回合越少）
+    //        － 本轮代价开着要付的（见 2；摸牌阶段换完紧接着出牌阶段，代价最贵；出牌阶段末、回合后换，几乎不要钱）；
+    //        把 X 变成 0（技能从此用不了）再扣一点。换要比照常摸多 0.1 才换。
+    //      一回合的价：摸 d 张，前 4 张每张 1，往后每张打 3/4 折（一回合用得掉的牌有限）；
+    //      多出来的出杀次数只有杀够用时才值（手里平均有 0.28×(d+2) 张杀），每次 0.7；装了连弩就不算。
+    //   2. 代价开着（本轮用过正面、还剩次数、此刻能用杀）的出牌阶段，两条路挑便宜的：
+    //      烧牌：用最便宜的几张牌把次数耗完，或者用杀把出杀次数耗完（窗口就关了），之后照常出牌；
+    //      停手：这回合不出牌，想用的牌留到下回合——下回合摸得多时留下的牌不那么值钱，杀多半用不上；多出手牌上限的要弃。
+    //   3. 本轮还没开代价、而在出牌阶段末把无中生有摸的 2 张换成属性划算时，无中生有放到最后用。
+    // 只在电脑操作（你托管也算）时接管；你自己操作时照原样。
+    lib.skill.xd_ai_goujian = {
+      charlotte: true,
+      silent: true,
+      popup: false,
+      // 排在别的出牌规则后面：代价开着时由它说了算
+      priority: 3,
+      V: { gamma: 0.85, shaHit: 0.7, keepX: 0.5, margin: 0.1 },
+      mine(player) {
+        try {
+          return !!player?.hasSkill?.("xd_toulao") && !lib.skill.xd_ai_core.humanActing(player);
+        } catch (e) {
+          return false;
+        }
+      },
+      // 第 k 张牌（一回合里）值几张：前 4 张 1，往后每张打 3/4 折。
+      marginal(k) {
+        return k <= 4 ? 1 : Math.pow(0.75, k - 4);
+      },
+      cardsValue(k) {
+        let v = 0;
+        for (let i = 1; i <= k; i++) v += lib.skill.xd_ai_goujian.marginal(i);
+        return v;
+      },
+      unlimitedSha(player) {
+        try {
+          return !Number.isFinite(Number(player.getCardUsable("sha", true)));
+        } catch (e) {
+          return false;
+        }
+      },
+      shaShare() {
+        const v = Number(lib.skill.xd_ai_core?.freq?.sha);
+        return Number.isFinite(v) && v > 0 ? v : 0.28;
+      },
+      // 攻击频率 a、额定摸牌数 d 时一个回合值几张。
+      turnValue(player, a, d) {
+        const skill = lib.skill.xd_ai_goujian;
+        let v = skill.cardsValue(d);
+        if (!skill.unlimitedSha(player)) v += skill.V.shaHit * Math.max(0, Math.min(a - 1, skill.shaShare() * (d + 2) - 1));
+        return v;
+      },
+      // 往后的回合（打过折）一共算几个。
+      horizon(player) {
+        const skill = lib.skill.xd_ai_goujian;
+        let T = Math.max(2, Math.min(5, game.players.length - 1));
+        if (player.hp <= 2) T--;
+        if (player.hp <= 1) T--;
+        T = Math.max(1, T);
+        let G = 0;
+        for (let t = 1; t <= T; t++) G += Math.pow(skill.V.gamma, t);
+        return G;
+      },
+      // 现在拿到牌有多要紧。
+      nowFactor(player) {
+        let f = 1 + 0.15 * Math.max(0, 3 - player.countCards("h"));
+        if (player.hp <= 2) f += 0.4;
+        if (player.hp <= 1) f += 0.4;
+        return f;
+      },
+      cost(player, card) {
+        let v = 4;
+        try {
+          v = Number(get.value(card, player));
+          if (!Number.isFinite(v)) v = 4;
+        } catch (e) {}
+        return Math.max(0.2, Math.min(2.5, v / 5));
+      },
+      // 他的攻击范围里有没有人（“此刻能用杀”要有合法目标）。
+      shaReach(player) {
+        try {
+          return game.hasPlayer(target => target !== player && player.inRange(target));
+        } catch (e) {
+          return true;
+        }
+      },
+      // 这一轮里他的回合还没到。
+      turnAhead(player) {
+        const start = _status.roundStart;
+        let current = _status.currentPhase?.next, guard = 0;
+        while (current && current !== start && guard++ < 20) {
+          if (current === player) return true;
+          current = current.next;
+        }
+        return false;
+      },
+      // 这次摸牌在什么时候："before"（出牌阶段还在后面）、"use"（出牌阶段里）、"after"（这一轮不会再有自己的出牌阶段）。
+      timing(player, evt) {
+        if (_status.currentPhase !== player) return lib.skill.xd_ai_goujian.turnAhead(player) ? "before" : "after";
+        let current = evt, guard = 0;
+        while (current && guard++ < 40) {
+          const name = current.name;
+          if (name === "phaseUse") return "use";
+          if (name === "phaseZhunbei" || name === "phaseJudge" || name === "phaseDraw") return "before";
+          if (name === "phaseDiscard" || name === "phaseJieshu") return "after";
+          let parent = null;
+          try {
+            parent = typeof current.getParent === "function" ? current.getParent() : current.parent;
+          } catch (e) {
+            parent = current.parent;
+          }
+          if (!parent || parent === current) break;
+          current = parent;
+        }
+        return "before";
+      },
+      // 代价开着（还剩 R 次、出杀还剩 aLeft 次）时这个出牌阶段怎么走，亏几张。dNext、aNext：下回合的额定摸牌数、攻击频率。
+      // 烧牌 { mode: "burn", cards: 先烧哪几张 }；停手 { mode: "hold" }。
+      windowPlan(player, R, aLeft, dNext, aNext) {
+        const skill = lib.skill.xd_ai_goujian, core = lib.skill.xd_ai_core;
+        const hand = player.getCards("hs");
+        const items = [];
+        for (const card of hand) {
+          const name = get.name(card, player);
+          if (name === "shan" || name === "wuxie") continue;
+          let order = 0, valued = false;
+          try {
+            order = core.orderOf(player, card);
+            valued = !!player.hasValueTarget(card);
+          } catch (e) {}
+          if (!valued) continue;
+          items.push({ card, name, cost: skill.cost(player, card), want: order > 0 });
+        }
+        // 这回合想用的：杀最多 aLeft 张（贵的先用）。
+        let slots = aLeft;
+        const want = items.filter(x => x.want).sort((a, b) => b.cost - a.cost).filter(x => x.name !== "sha" || slots-- > 0);
+        // 停手：想用的牌留到下回合，和下回合摸的 dNext 张挤在一起，只剩边际价；杀够用时留下的杀多半用不上。
+        const m = skill.marginal(dNext + 1);
+        const spareSha = skill.shaShare() * (dNext + 2) >= aNext;
+        let hold = 0;
+        for (const x of want) hold += x.cost * (1 - (x.name === "sha" && spareSha ? Math.min(m, 0.3) : m));
+        let limit = hand.length;
+        try {
+          limit = player.getHandcardLimit();
+        } catch (e) {}
+        const over = Math.max(0, hand.length - limit) - Math.max(0, hand.length - want.length - limit);
+        if (over > 0) {
+          const cheap = hand.map(card => skill.cost(player, card)).sort((a, b) => a - b);
+          for (let i = 0; i < over; i++) hold += cheap[i] || 0;
+        }
+        // 烧牌：最便宜的 R 张；或者出杀次数比 R 少时，用 aLeft 张最便宜的杀把出杀次数耗完。
+        const burnable = items.slice().sort((a, b) => a.cost - b.cost);
+        const routes = [];
+        if (burnable.length >= R) routes.push(burnable.slice(0, R));
+        const shas = burnable.filter(x => x.name === "sha");
+        if (Number.isFinite(aLeft) && aLeft < R && shas.length >= aLeft) routes.push(shas.slice(0, aLeft));
+        let burn = null, burnCost = Infinity;
+        for (const route of routes) {
+          const c = route.reduce((sum, x) => sum + x.cost, 0);
+          if (c < burnCost) {
+            burn = route;
+            burnCost = c;
+          }
+        }
+        if (burn && burnCost <= hold) return { mode: "burn", loss: burnCost, cards: burn.map(x => x.card) };
+        return { mode: "hold", loss: hold };
+      },
+      // 换完以后本轮代价要付多少。
+      negCost(player, a2, d2, R2, timing) {
+        const skill = lib.skill.xd_ai_goujian;
+        if (R2 <= 0 || timing === "after") return 0;
+        let aLeft = skill.unlimitedSha(player) ? Infinity : a2;
+        if (timing === "use") {
+          try {
+            aLeft -= Number(player.countUsed("sha", true)) || 0;
+          } catch (e) {}
+        }
+        if (aLeft <= 0 || !skill.shaReach(player)) return 0;
+        return skill.windowPlan(player, R2, aLeft, d2, a2).loss;
+      },
+      // 摸 n 张时：0 换成攻击频率、1 换成额定摸牌数、2 照常摸。
+      drawChoiceAt(player, n, timing) {
+        const skill = lib.skill.xd_ai_goujian, tl = lib.skill.xd_toulao;
+        if (tl.remaining(player) <= 0) return 2;
+        const used = tl.getState(player).used;
+        const a = tl.getAttack(player), d = tl.getDraw(player);
+        const G = skill.horizon(player);
+        const base = skill.turnValue(player, a, d);
+        let best = 2, bestScore = skill.nowFactor(player) * skill.cardsValue(n) + skill.V.margin;
+        for (const [i, a2, d2] of [[0, a + n, d], [1, a, d + n]]) {
+          const X2 = Math.abs(a2 - d2);
+          let v = G * (skill.turnValue(player, a2, d2) - base);
+          if (X2 === 0) v -= skill.V.keepX * G;
+          v -= skill.negCost(player, a2, d2, Math.max(0, X2 - used - 1), timing);
+          if (v > bestScore) {
+            best = i;
+            bestScore = v;
+          }
+        }
+        return best;
+      },
+      drawChoice(player, n, evt) {
+        const skill = lib.skill.xd_ai_goujian;
+        if (!lib.skill.xd_toulao || !(n > 0) || !skill.mine(player)) return;
+        _status._xd_planning = (_status._xd_planning || 0) + 1;
+        try {
+          return skill.drawChoiceAt(player, n, skill.timing(player, evt));
+        } catch (e) {
+          return;
+        } finally {
+          _status._xd_planning--;
+        }
+      },
+      // 出牌阶段这一下：代价开着时烧牌或停手；没开代价时看无中生有要不要放到最后。
+      usePlan(player, evt) {
+        const skill = lib.skill.xd_ai_goujian, tl = lib.skill.xd_toulao;
+        if (!tl) return null;
+        const st = tl.getState(player), R = tl.remaining(player);
+        let left = 0;
+        try {
+          left = Number(player.getCardUsable("sha"));
+        } catch (e) {}
+        const key = [player.getCards("hs").map(card => card.cardid).join(), R, st.armed, !!evt._xd_toulao_needSha, left, tl.getAttack(player), tl.getDraw(player), player.hp].join("|");
+        const box = (evt._xd_goujian ??= {});
+        if (box.key === key) return box.plan;
+        box.key = key;
+        box.plan = null;
+        _status._xd_planning = (_status._xd_planning || 0) + 1;
+        try {
+          if (st.armed && R > 0 && evt._xd_toulao_needSha) {
+            const aLeft = Number.isFinite(left) ? Math.max(1, left) : Infinity;
+            box.plan = skill.windowPlan(player, R, aLeft, tl.getDraw(player), tl.getAttack(player));
+          } else if (!st.armed && R > 0 && player.countCards("hs", card => get.name(card, player) === "wuzhong") > 0) {
+            if (skill.drawChoiceAt(player, 2, "after") !== 2) box.plan = { mode: "wuzhongLast" };
+          }
+        } catch (e) {
+          box.plan = null;
+        } finally {
+          _status._xd_planning--;
+        }
+        return box.plan;
+      },
+      mod: {
+        aiOrder(player, card, num) {
+          if (_status._xd_planning || typeof num !== "number" || get.itemtype(card) !== "card") return;
+          const evt = _status.event;
+          if (!evt || evt.name !== "chooseToUse" || evt.type !== "phase" || evt.player !== player) return;
+          const skill = lib.skill.xd_ai_goujian;
+          if (!skill.mine(player)) return;
+          const plan = skill.usePlan(player, evt);
+          if (!plan) return;
+          if (plan.mode === "burn") {
+            const i = plan.cards.indexOf(card);
+            return i >= 0 ? 50 - i : -1;
+          }
+          if (plan.mode === "hold") return -1;
+          if (plan.mode === "wuzhongLast" && num > 0.3 && get.name(card, player) === "wuzhong") return 0.3;
+        }
+      }
+    };
+    game.addGlobalSkill("xd_ai_goujian");
     // AI（所有电脑，你 11-06 17:00）：【铁索连环】是上佳锦囊。哪怕只被普通属性杀触发，也是一张牌让一名敌人掉 1 血，
     // 而且极易触发；奠定胜局的那一击多半就是铁索＋酒＋属性杀。本体却爱把它重铸掉，换来的牌多半不如它。
     // 所以电脑在自己的出牌阶段，只要有合适的铁索目标就不重铸铁索连环，改为照常使用：
@@ -20464,6 +20732,9 @@ export default function () {
                       const player = get.player();
                       const skill = lib.skill.xd_toulao;
                       const a = skill.getAttack(player), d = skill.getDraw(player), n = get.event().xd_toulao_amount;
+                      // 电脑按账选（xd_ai_goujian）；算不出来时照下面原来的保守办法。
+                      const planned = lib.skill.xd_ai_goujian?.drawChoice?.(player, n, get.event());
+                      if (typeof planned === "number") return planned;
                       // 只给AI一个保守策略：优先选择发动后不会把X明显拉大的方向，否则正常摸牌。
                       const x0 = Math.abs(a - d);
                       const xa = Math.abs((a + n) - d);
