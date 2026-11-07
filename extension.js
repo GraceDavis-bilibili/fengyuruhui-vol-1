@@ -9531,6 +9531,143 @@ function createXdLegacyPack() {
       }
     };
     game.addGlobalSkill("xd_ai_goujian");
+    // AI（所有电脑）：彭越【裂兵】（规则、文字原样不动）。
+    // 裂兵：锁定技，每轮限0.5次，你仅能将目标为你/其他角色的手牌当【无中生有】/【杀】使用。
+    // 挠击：锁定技，你使用牌后攻击范围、攻击频率、技能限制次数+0.1，你造成伤害后翻倍你一个技能的数值。
+    // 代码里：裂兵剩余次数（文本数值＋挠击累计−本轮已用）够 1 时，手里指人/指己的牌（杀、闪、无懈除外）只能当杀/无中生有用，
+    // 每转一张用掉 1 次；不够 1 时一切照常。挠击每用一张牌累计＋0.1，同时加到攻击范围、出杀次数、技能次数（含裂兵）上。
+    // 翻倍选哪个：照原来的，选挠击。它同时推高出杀次数、攻击范围和裂兵次数，以后每用一张牌都多加一份，越早翻越滚越大；
+    // 翻裂兵只多出强制转化的次数（转化有赚有亏）。
+    // 原来电脑缺的是“强制转化时先转哪张”：本体只认转化后的牌名，几张都叫无中生有/杀时随手拿一张，
+    // 常把乐不思蜀、顺手牵羊当杀用掉，或者先出了真杀，结果出杀次数没了、指人的牌转不成杀也用不了，整回合卡住。
+    // 现在按账（单位：张，牌的价＝本体价 ÷ 5）：
+    //   每张能转的牌：转化的赚头＝当无中生有/杀用的价 − 原牌的价（原牌按本体原名算；血 2 以下时桃、酒再多算 0.8）。
+    //   赚头不差（不低于 −0.2）的先转，赚得多的先；都亏时：
+    //     次数大到这回合耗不完（或者已有 3 次以上，往后只会更多）：好牌反正只能当杀/无中用，先用亏得最少的；
+    //     耗得完：看把次数耗完能放出多少好牌（原牌这回合能照常用的，按价的六成算；血 2 以下时手里的桃、酒放出来能救命，
+    //     每张再加 0.8），放出来的比亏的多才转，先转亏得最少的；不然这回合先不转，好牌留着等下回合拿杂牌耗次数。
+    //   转化在真杀前面出，免得出杀次数先被真杀用掉。
+    // 只在电脑操作（你托管也算）时接管；你自己操作时照原样。
+    lib.skill.xd_ai_pengyue = {
+      charlotte: true,
+      silent: true,
+      popup: false,
+      priority: 3,
+      V: { ok: -0.2, free: 0.6, save: 0.8 },
+      mine(player) {
+        try {
+          return !!player?.hasSkill?.("xd_liebing") && !!lib.xd_utils?.pengyue && !lib.skill.xd_ai_core.humanActing(player);
+        } catch (e) {
+          return false;
+        }
+      },
+      cost(value) {
+        const v = Number(value);
+        return Math.max(0.2, Math.min(2.5, (Number.isFinite(v) ? v : 4) / 5));
+      },
+      // 按原牌名看（不被裂兵转化）：价、这回合能不能照常用。
+      original(player, card) {
+        const P = lib.xd_utils.pengyue, core = lib.skill.xd_ai_core;
+        const old = P.costProbe;
+        P.costProbe = true;
+        try {
+          let value = 4, usable = false;
+          try {
+            value = get.value(card, player);
+          } catch (e) {}
+          try {
+            usable = core.orderOf(player, card) > 0 && !!player.hasValueTarget(card);
+          } catch (e) {}
+          return { cost: lib.skill.xd_ai_pengyue.cost(value), usable, name: card.name };
+        } finally {
+          P.costProbe = old;
+        }
+      },
+      // 当 name（无中生有/杀）用的价；此刻用不了 null。
+      converted(player, card, name, evt) {
+        const P = lib.xd_utils.pengyue, skill = lib.skill.xd_ai_pengyue;
+        try {
+          if (!P.can(card, name, player, evt)) return null;
+          const v = P.virtual(card, name);
+          if (name === "sha" && !player.hasValueTarget(v)) return null;
+          return skill.cost(get.value({ name, isCard: true }, player));
+        } catch (e) {
+          return null;
+        }
+      },
+      plan(player, evt) {
+        const P = lib.xd_utils.pengyue, skill = lib.skill.xd_ai_pengyue, V = skill.V;
+        if (!P.active(player)) return null;
+        const hand = player.getCards("hs").filter(card => P.hand(card, player) && P.kind(card));
+        let shaLeft = 0;
+        try {
+          shaLeft = Number(player.getCardUsable("sha"));
+        } catch (e) {}
+        const key = [hand.map(card => card.cardid).join(), P.remaining(player), shaLeft, player.hp].join("|");
+        const box = (evt._xd_pengyue ??= {});
+        if (box.key === key) return box.plan;
+        box.key = key;
+        box.plan = null;
+        _status._xd_planning = (_status._xd_planning || 0) + 1;
+        try {
+          const rows = hand.map(card => {
+            const orig = skill.original(player, card);
+            const name = P.effective(card, player);
+            const conv = name ? skill.converted(player, card, name, evt) : null;
+            // 血 2 以下时桃、酒留着能救命，转掉再多亏 0.8。
+            const life = player.hp <= 2 && (orig.name === "tao" || orig.name === "jiu") ? V.save : 0;
+            return { card, orig, conv, gain: conv === null ? -Infinity : conv - orig.cost - life };
+          });
+          const ready = rows.filter(x => x.conv !== null).sort((a, b) => b.gain - a.gain);
+          if (!ready.length) {
+            box.plan = { mode: "none" };
+            return box.plan;
+          }
+          const top = ready[0];
+          if (top.gain >= V.ok) {
+            box.plan = { mode: "convert", card: top.card };
+            return box.plan;
+          }
+          // 都亏。次数大到这回合耗不完（或者 3 次以上，往后只会更多）：好牌反正只能当杀/无中用，挑亏得最少的先用。
+          const k = Math.floor(P.remaining(player) / 10);
+          if (ready.length < k || k >= 3) {
+            box.plan = { mode: "convert", card: top.card };
+            return box.plan;
+          }
+          // 耗得完：看把这一轮的次数耗完能放出多少好牌。
+          const drain = ready.slice(0, k);
+          const loss = drain.reduce((sum, x) => sum - Math.min(0, x.gain), 0);
+          let freed = 0;
+          for (const x of rows) {
+            if (drain.includes(x)) continue;
+            if (x.orig.usable) freed += V.free * x.orig.cost;
+            if (player.hp <= 2 && (x.orig.name === "tao" || x.orig.name === "jiu")) freed += V.save;
+          }
+          box.plan = freed > loss ? { mode: "convert", card: top.card } : { mode: "hold" };
+        } catch (e) {
+          box.plan = null;
+        } finally {
+          _status._xd_planning--;
+        }
+        return box.plan;
+      },
+      mod: {
+        aiOrder(player, card, num) {
+          if (_status._xd_planning || typeof num !== "number" || get.itemtype(card) !== "card") return;
+          const evt = _status.event;
+          if (!evt || evt.name !== "chooseToUse" || evt.type !== "phase" || evt.player !== player) return;
+          const skill = lib.skill.xd_ai_pengyue;
+          if (!skill.mine(player)) return;
+          const P = lib.xd_utils.pengyue;
+          if (!P.hand(card, player) || !P.kind(card)) return;
+          const plan = skill.plan(player, evt);
+          if (!plan || plan.mode === "none") return;
+          if (plan.mode === "convert") return card === plan.card ? 20 : -1;
+          return -1;
+        }
+      }
+    };
+    game.addGlobalSkill("xd_ai_pengyue");
     // AI（所有电脑，你 11-06 17:00）：【铁索连环】是上佳锦囊。哪怕只被普通属性杀触发，也是一张牌让一名敌人掉 1 血，
     // 而且极易触发；奠定胜局的那一击多半就是铁索＋酒＋属性杀。本体却爱把它重铸掉，换来的牌多半不如它。
     // 所以电脑在自己的出牌阶段，只要有合适的铁索目标就不重铸铁索连环，改为照常使用：
