@@ -18775,16 +18775,43 @@ function createXdLegacyPack() {
         }
         return false;
       },
-      // list：[{ key, card }]；cost(key, card, targets) 返回代价，返回 null 表示这个方案不行；
+      // list：[{ key, card }]；cost(key, card, targets, X) 返回代价，返回 null 表示这个方案不行；
       // rescue(target)：印完之后自己还能不能救这个队友，默认看手里有没有真桃。
+      // 11-08 起收益照共用的愿望表（xd_ai_core.wish，总纲七.2）按“张”算：此刻印这张牌、挑最好的用法和目标，我们这边赚几张
+      // （斩杀线、队友头上的乐、敌人的连弩、决斗、火攻、南蛮万箭的账都在里面）。这时 cost 多收到一个 X（愿望表的场面，
+      // X.W＝一张新牌值几张），代价也按“张”给。本体的收益只用来认目标（几个人、群伤打不打到队友）。没有愿望表时照原来（不给 X）。
       plan(player, list, cost, rescue) {
-        const skill = lib.skill.xd_print_ai;
+        const skill = lib.skill.xd_print_ai, core = lib.skill.xd_ai_core;
+        let X = null;
+        if (typeof core?.wish === "function" && typeof core.wishCtx === "function") {
+          try {
+            X = core.wishCtx(player);
+          } catch (e) {
+            X = null;
+          }
+        }
         let best = null;
         for (const { key, card } of list) {
-          for (const targets of skill.sets(card, player)) {
+          const sets = skill.sets(card, player);
+          if (!sets.length) continue;
+          let options = sets.map(targets => {
             let effect = 0;
             for (const target of targets) effect += get.effect(target, card, player, player);
-            const price = cost(key, card, targets);
+            return { targets, effect };
+          });
+          if (X) {
+            let w = null;
+            try {
+              w = core.wish(player, card, X);
+            } catch (e) {
+              w = null;
+            }
+            const single = w?.target && options.some(o => o.targets.length === 1 && o.targets[0] === w.target);
+            const top = options.reduce((x, y) => (y.effect > x.effect ? y : x));
+            options = [{ targets: single ? [w.target] : top.targets, effect: core.wishNum(w?.v, 0) }];
+          }
+          for (const { targets, effect } of options) {
+            const price = X ? cost(key, card, targets, X) : cost(key, card, targets);
             if (price === null || price === undefined) continue;
             const amount = typeof price === 'number' ? price : price.value;
             if (!Number.isFinite(amount)) continue;
@@ -18795,6 +18822,33 @@ function createXdLegacyPack() {
           }
         }
         return best;
+      },
+      // 一张实体牌（材料）在这手牌里值几张：桓温、虞姬共用的手牌价（装备按 equipCost）。按这次询问缓存。
+      price(player, card) {
+        const H = lib.skill.xd_huanwen_ai, evt = _status.event;
+        try {
+          if (get.position(card) === "e") return H.equipCost(player, card);
+          const hand = player.getCards("hs");
+          const key = hand.map(c => c.cardid).join();
+          let map = evt?._xd_print_prices?.player === player && evt._xd_print_prices.key === key ? evt._xd_print_prices.map : null;
+          if (!map) {
+            map = H.prices(H.ctx(player, hand), hand);
+            if (evt) evt._xd_print_prices = { player, key, map };
+          }
+          const v = map.get(card);
+          if (typeof v === "number" && Number.isFinite(v)) return v;
+        } catch (e) {}
+        return 1;
+      },
+      // 手里再多一张 name 值几张（同上一套价）。
+      extra(player, name) {
+        const H = lib.skill.xd_huanwen_ai;
+        try {
+          const hand = player.getCards("h");
+          const v = H.marg(H.ctx(player, hand), hand, name);
+          if (typeof v === "number" && Number.isFinite(v)) return v;
+        } catch (e) {}
+        return name === "tao" ? 2 : 1;
       },
       // 当前询问真正能用的实体牌；不能把被禁用的同名牌当作现成的响应手段。
       responseCards(player, event, names) {
@@ -24203,13 +24257,21 @@ export default function () {
               const list = lib.skill.xd_hezong.getLegalVCards(event, player);
               if (!list.length) return 0;
               if (event.type === "phase") {
-                const hold = 0.6 * print.unit(player) * get.value({ name: player.hp <= 2 ? "tao" : "shan", isCard: true }, player);
+                const keepName = player.hp <= 2 ? "tao" : "shan";
                 const cards = list.map(info => ({ key: info[2] + "|" + (info[3] || ""), card: get.autoViewAs({ name: info[2], nature: info[3], isCard: true }, "unsure") }));
                 const memo = new Map();
-                const plan = print.plan(player, cards, key => {
-                  const name = key.split("|")[0];
-                  if (!memo.has(name)) memo.set(name, lib.skill.xd_hezong.aiPrintCost(player, name, hold));
-                  return memo.get(name);
+                let hold = null;
+                const plan = print.plan(player, cards, (key, card, targets, X) => {
+                  const name = key.split("|")[0], memoKey = name + (X ? "|张" : "");
+                  if (!memo.has(memoKey)) {
+                    // 按“张”（共用的愿望表那一路）：留着阳项≈回合外白给的一张闪（桃）的六成，刷新时己方净摸的牌每张 W。
+                    if (X) memo.set(memoKey, lib.skill.xd_hezong.aiPrintCost(player, name, 0.6 * print.extra(player, keepName), X.W));
+                    else {
+                      hold ??= 0.6 * print.unit(player) * get.value({ name: keepName, isCard: true }, player);
+                      memo.set(memoKey, lib.skill.xd_hezong.aiPrintCost(player, name, hold));
+                    }
+                  }
+                  return memo.get(memoKey);
                 });
                 if (!player.isUnderControl(true) || _status.auto) player._xd_hezong_aiPlan = plan;
                 return plan ? plan.order + 0.1 : 0;
@@ -24268,10 +24330,11 @@ export default function () {
             },
             // 四、出牌阶段印 name 的代价：留着阳项的价值 ×（1 − 很快刷新回来的把握），刷新时己方净摸的牌再减掉（晚一轮，打八折）。
             // 很快能刷新回来时就放手印（你 10-25 10:12 说过的“合纵能指望很快刷新就该放开用”）。
-            aiPrintCost(player, name, hold) {
+            // eff：一张牌的价（按“张”算时给 W；不给时照原来用无中生有量出来的本体收益）。
+            aiPrintCost(player, name, hold, eff) {
               const skill = lib.skill.xd_hezong;
               const p = skill.aiRefreshOdds(player, name, true);
-              return hold * (1 - p) - p * skill.aiDrawSide(player) * skill.aiCardEff(player) * 0.8;
+              return hold * (1 - p) - p * skill.aiDrawSide(player) * (eff ?? skill.aiCardEff(player)) * 0.8;
             },
             // 回合外（闪、桃、无懈）。没有同名真牌就印（濒死只救自己和队友）。有同名真牌时：
             // 出真牌能刷新别人、对己方有利 → 出真牌；会刷新敌人 → 改用印牌；没人在等 → 印了很快能刷新回来才印、留下真牌。
@@ -25366,7 +25429,8 @@ export default function () {
               const unit = print.unit(player);
               const base = unit * get.value(material, player);
               const cards = list.map(info => ({ key: info[2] + "|" + (info[3] || ""), card: get.autoViewAs({ name: info[2], nature: info[3], isCard: true }, "unsure") }));
-              const plan = print.plan(player, cards, (key, card, targets) => ({ value: base + 0.2 * unit * targets.length, spent: [material] }));
+              const plan = print.plan(player, cards, (key, card, targets, X) =>
+                X ? { value: print.price(player, material) + 0.2 * targets.length, spent: [material] } : { value: base + 0.2 * unit * targets.length, spent: [material] });
               if (!player.isUnderControl(true) || _status.auto) player._xd_lian_aiPlan = plan;
               return plan ? plan.order + 0.1 : 0;
             },
@@ -28117,7 +28181,7 @@ export default function () {
               if (event.type !== "phase") return print.offTurnOk(player, event, moved.map(card => get.name(card, player))) ? 8 : 0;
               const unit = print.unit(player);
               const cards = moved.map(card => ({ key: card.cardid, card: skill.toVirtual(card, player) }));
-              const plan = print.plan(player, cards, () => unit);
+              const plan = print.plan(player, cards, (key, card, targets, X) => (X ? 0.2 : unit));
               if (!player.isUnderControl(true) || _status.auto) player._xd_jiji_aiPlan = plan;
               return plan ? plan.order + 0.1 : 0;
             },
@@ -38528,15 +38592,16 @@ export default function () {
                 }
                 const sides = skill.getSides(player);
                 const options = skill.getOptions(event, player);
-                const costOf = new Map();
+                const costOf = new Map(), costCards = new Map();
                 for (const option of options) {
                   for (const card of skill.getMaterialCards(player, sides[1 - option.targetSide])) {
-                    const price = print.cardCost(player, card);
+                    const price = print.cardCost(player, card), inCards = print.price(player, card);
                     if (!costOf.has(option.useName) || price < costOf.get(option.useName).value) costOf.set(option.useName, { value: price, spent: [card] });
+                    if (!costCards.has(option.useName) || inCards < costCards.get(option.useName).value) costCards.set(option.useName, { value: inCards, spent: [card] });
                   }
                 }
                 const cards = names.map(name => ({ key: name, card: get.autoViewAs({ name, isCard: true }, "unsure") }));
-                const plan = print.plan(player, cards, key => costOf.get(key) ?? null);
+                const plan = print.plan(player, cards, (key, card, targets, X) => (X ? costCards : costOf).get(key) ?? null);
                 if (!player.isUnderControl(true) || _status.auto) player._xd_junce_aiPlan = plan;
                 return plan ? plan.order + 0.1 : 0;
               },
