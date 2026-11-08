@@ -7752,6 +7752,15 @@ function createXdPengyue() {
       if (!k && !bonus) return base;
       return Math.floor((base * 2 ** k * 10 + bonus) / 10 + 1e-9);
     },
+    // 挠击“翻倍你一个技能的数值”里次数以外的数字（如合纵的“一张”、相赴的“调整一张”）：只翻倍，
+    // 不加累计的 0.1（累计只加在攻击范围、攻击频率、技能限制次数上）。翻倍和次数记在同一个记号上（xdLimitKey 或技能名）。
+    // 没有彭越账本的角色原样返回，其他武将完全不受影响。
+    scale(player, id, base) {
+      const s = player?.storage?.xd_pengyue;
+      if (!s || typeof base !== "number" || !Number.isFinite(base)) return base;
+      const k = P.multOf(s, lib.skill[id]?.xdLimitKey || id);
+      return k ? base * 2 ** k : base;
+    },
     // 翻倍记在技能本身上；子技能（含 chooseButton 的 backup）和它 group 里另立的技能（如极略里的完杀）都跟着它走。
     multOf(s, id) {
       const m = s?.mult;
@@ -7780,10 +7789,12 @@ function createXdPengyue() {
         // 技能被复制成别的名字时（如诲给弟子技能做的代理），次数仍记在原技能上（xdLimitKey）。
         const key = lib.skill[id]?.xdLimitKey || id;
         if (list.some(o => o.id === id || o.key === key)) continue;
-        const n = P.textLimit(player, id);
-        if (!(n > 0)) continue;
-        const k = P.multOf(s, key), shown = n * 2 ** k;
-        list.push({ id, key, line: get.translation(id) + "：次数 " + shown + " → " + shown * 2,
+        const n = P.textLimit(player, id), extra = P.textNumbers(player, id);
+        if (!(n > 0) && !extra.length) continue;
+        const k = P.multOf(s, key), f = 2 ** k, parts = [];
+        if (n > 0) parts.push("次数 " + n * f + " → " + n * f * 2);
+        for (const x of extra) parts.push(x.label + " " + x.base * f + " → " + x.base * f * 2);
+        list.push({ id, key, line: get.translation(id) + "：" + parts.join("，"),
           apply: () => { s.mult[key] = k + 1; } });
       }
       return list;
@@ -7798,6 +7809,8 @@ function createXdPengyue() {
           const n = Number(info.xdLimitBase(player));
           return Number.isFinite(n) ? n : null;
         }
+        P.markerInfo(id);
+        if (typeof info.xdTextLimit === "number" && info.xdTextLimit > 0) return info.xdTextLimit;
         for (const m of game.expandSkills([id])) {
           const mi = lib.skill[m];
           if (!mi || mi.limited || mi.juexingji) continue;
@@ -7810,6 +7823,17 @@ function createXdPengyue() {
         }
       } catch (e) {}
       return null;
+    },
+    // 技能文字里次数以外、翻倍时跟着翻的数字（如合纵的“一张”）：技能用 xdDoubles 报出 [{ label, base }]，base 是文字原数。
+    textNumbers(player, id) {
+      const info = lib.skill[id];
+      if (!info || info.charlotte || info.equipSkill || !lib.translate[id]) return [];
+      try {
+        const list = typeof info.xdDoubles === "function" ? info.xdDoubles(player) : info.xdDoubles;
+        return Array.isArray(list) ? list.filter(x => x && typeof x.label === "string" && Number.isFinite(x.base) && x.base > 0) : [];
+      } catch (e) {
+        return [];
+      }
     },
     // 原生 usable：换成按当前求值角色计算的函数；别的代码把它当数字比较时（如 0 < info.usable）仍得到原数。
     // 次数写成 getter（get usable() {…}）的技能直接赋值改不了：按函数包，每次照样读原来的 getter。
@@ -7841,7 +7865,10 @@ function createXdPengyue() {
       } catch (e) {}
     },
     wrapOwned(player) {
-      for (const id of game.expandSkills(player.getSkills(true).slice())) P.wrapUsable(lib.skill[id]);
+      for (const id of game.expandSkills(player.getSkills(true).slice())) {
+        P.wrapUsable(lib.skill[id]);
+        P.markerInfo(id);
+      }
     },
     // 自己记账、提示里写着上限的技能（投醪、相赴这类）：挠击一改上限，就让它们刷新一下提示。
     refreshCaps(player) {
@@ -7911,6 +7938,85 @@ function createXdPengyue() {
         if (outer) open.delete(id);
       }
     },
+    // ===== 引擎里用“用过标记”自己记次数的技能（如盗书 daoshu_used、狂斧 stdkuangfu_used）=====
+    // 认法见 markerFind；认出来的技能（及其子技能、group 成员）都记到同一份 { owner, marker } 上。
+    markerInfos: new Map(),
+    markerIds: new Map(),
+    hiding: new Map(),
+    markerInfo(id) {
+      if (typeof id !== "string" || !id) return null;
+      if (P.markerInfos.has(id)) return P.markerInfos.get(id);
+      let found = null;
+      try {
+        const src = lib.skill[id]?.sourceSkill;
+        found = typeof src === "string" && src !== id && lib.skill[src] ? P.markerInfo(src) : P.markerFind(id);
+      } catch (e) {
+        found = null;
+      }
+      if (!P.markerInfos.has(id)) P.markerInfos.set(id, found);
+      return found;
+    },
+    markerFind(owner) {
+      const top = lib.skill[owner];
+      if (!top || top.charlotte || top.equipSkill || top.limited || top.juexingji) return null;
+      // 本扩展自己记账的技能（相赴、辑志……）已经单独接好。
+      if (top.xdLimitBase || top.xdLimitKey || top.xdTextLimit) return null;
+      if (!String(lib.translate[owner + "_info"] || "").includes("限一次")) return null;
+      const family = [owner];
+      for (const g of [].concat(top.group || [])) if (typeof g === "string" && lib.skill[g] && !family.includes(g)) family.push(g);
+      for (const key of Object.keys(top.subSkill || {})) {
+        const sub = owner + "_" + key;
+        if (lib.skill[sub] && !family.includes(sub)) family.push(sub);
+      }
+      if (family.some(id => lib.skill[id].usable !== undefined || lib.skill[id].round)) return null;
+      const text = fn => {
+        try {
+          return typeof fn === "function" ? Function.prototype.toString.call(fn) : "";
+        } catch (e) {
+          return "";
+        }
+      };
+      const checked = new Set(), added = new Set();
+      for (const id of family) {
+        const info = lib.skill[id];
+        for (const m of text(info.filter).matchAll(/hasSkill\(\s*(["'`])([A-Za-z0-9_]+)\1/g)) checked.add(m[2]);
+        for (const m of text(info.content).matchAll(/addTempSkill\(\s*(["'`])([A-Za-z0-9_]+)\1/g)) added.add(m[2]);
+      }
+      const markers = [...checked].filter(m => {
+        if (!added.has(m) || !m.startsWith(owner + "_")) return false;
+        // 标记本身不能是有作用的技能（子技能里常见 used: { charlotte: true } 这种纯标记，可以）。
+        const info = lib.skill[m];
+        return !info || !(info.trigger || info.enable || info.mod || info.content || info.global || info.group);
+      });
+      if (markers.length !== 1) return null;
+      const found = { owner, marker: markers[0] };
+      for (const id of family) P.markerInfos.set(id, found);
+      P.markerIds.set(found.marker, owner);
+      top.xdTextLimit = 1;
+      return found;
+    },
+    // 这一段有效期里标记被加了几次：标记不在身上就是 0。
+    markerUsed(player, marker) {
+      const has = P.rawHasSkill ? P.rawHasSkill.call(player, marker) : player.hasSkill(marker);
+      if (!has) return 0;
+      return Math.max(1, Number(P.state(player).markers?.[marker]) || 0);
+    },
+    // 评估这个技能的过滤器：次数没用满时，这名角色暂时看不见标记（只在这段时间、只对这名角色；嵌套、出错都会恢复）。
+    withMarker(player, mark, fn) {
+      const cap = P.limit(player, mark.owner, 1);
+      if (!(cap > 1) || P.markerUsed(player, mark.marker) >= cap) return fn();
+      let set = P.hiding.get(player);
+      if (!set) P.hiding.set(player, set = new Map());
+      set.set(mark.marker, (set.get(mark.marker) || 0) + 1);
+      try {
+        return fn();
+      } finally {
+        const n = (set.get(mark.marker) || 1) - 1;
+        if (n > 0) set.set(mark.marker, n);
+        else set.delete(mark.marker);
+        if (!set.size) P.hiding.delete(player);
+      }
+    },
     // 还有余量的 round 技能临时放行（hasUsableCard 不经过过滤器，直接读时间戳）。
     withRoundsOpen(player, fn) {
       const list = [];
@@ -7945,6 +8051,8 @@ function createXdPengyue() {
             try { return original.call(this, event, player, ...args); }
             finally { P.costProbe = old; }
           };
+          const mark = P.markerInfo(id);
+          if (mark) return P.withMarker(player, mark, invoke);
           const period = info?.round;
           if (typeof period !== "number" || period <= 0) return invoke();
           const cap = P.limit(player, id, 1);
@@ -7962,6 +8070,28 @@ function createXdPengyue() {
               this.storage[name] === game.roundNumber) P.countRound(this, name.slice(0, -11));
           } catch (e) {}
           return markSkill.apply(this, arguments);
+        };
+      }
+      if (PP && typeof PP.hasSkill === "function") {
+        const hasSkill = PP.hasSkill;
+        P.rawHasSkill = hasSkill;
+        PP.hasSkill = function (name) {
+          if (typeof name === "string" && P.hiding.size && P.hiding.get(this)?.has(name)) return false;
+          return hasSkill.apply(this, arguments);
+        };
+      }
+      if (PP && typeof PP.addTempSkill === "function") {
+        const addTempSkill = PP.addTempSkill;
+        PP.addTempSkill = function (skill) {
+          try {
+            if (typeof skill === "string" && this.storage?.xd_pengyue && P.markerIds.has(skill)) {
+              const s = P.state(this);
+              s.markers ||= {};
+              const had = P.rawHasSkill ? P.rawHasSkill.call(this, skill) : false;
+              s.markers[skill] = (had ? Math.max(1, Number(s.markers[skill]) || 0) : 0) + 1;
+            }
+          } catch (e) {}
+          return addTempSkill.apply(this, arguments);
         };
       }
       if (PP && typeof PP.hasUsableCard === "function") {
@@ -12665,13 +12795,15 @@ function createXdLegacyPack() {
       // 调手牌带来的卡差（第 1 条）。
       move(player, target, relation, info) {
         const skill = lib.skill.xd_ai_zwj, w = info.weights.get(target) ?? 0;
+        // 彭越翻倍过【相赴】：调整 m 张（摸 m 张；弃的按 m 张粗算）。m=1 时照旧。
+        const m = lib.skill.xd_xiangfu.amount?.(player) ?? 1;
         if (relation.before > 0) {
           info.ownLoss ??= skill.ownLoss(player, info.ctx, info);
-          let v = -info.ownLoss + w * skill.draw;
+          let v = (-info.ownLoss + w * skill.draw) * m;
           if (w > 0.3 && lib.skill.xd_ai_core.nextFriendlyOnly(player, target)) v += skill.tempo;
           return v;
         }
-        if (relation.before < 0) return skill.draw - w * skill.partnerLoss(player, target);
+        if (relation.before < 0) return (skill.draw - w * skill.partnerLoss(player, target)) * m;
         return 0;
       },
       // 这回合出杀打最好打的敌人值几张：打中掉的血，打不中逼掉他一张闪。
@@ -12736,7 +12868,9 @@ function createXdLegacyPack() {
         const skill = lib.skill.xd_ai_zwj, xf = lib.skill.xd_xiangfu;
         if (xf.getState(player).used.includes("sha")) return null;
         const count = new Map(game.players.map(current => [current, current.countCards("h")]));
-        const shift = jiu.relation.before > 0 ? -1 : jiu.relation.before < 0 ? 1 : 0;
+        // 调整 m 张（彭越翻倍过）时各挪 m 张、印杀要差 2m+1 张以上；m=1 时就是原来的挪一张、差 3 张。
+        const m = xf.amount?.(player) ?? 1;
+        const shift = jiu.relation.before > 0 ? -m : jiu.relation.before < 0 ? m : 0;
         count.set(player, count.get(player) + shift);
         count.set(jiu.target, count.get(jiu.target) - shift);
         const h = count.get(player);
@@ -12744,7 +12878,7 @@ function createXdLegacyPack() {
         for (const target of game.players) {
           if (target === player || !target.isIn()) continue;
           const before = h - count.get(target);
-          if (Math.abs(before) < 3) continue;
+          if (Math.abs(before) < 2 * m + 1) continue;
           const adj = skill.yixin(player, target, info, info.ctx, false);
           if (adj === null) continue;
           const v = skill.move(player, target, { before, name: "sha" }, info) + adj;
@@ -18799,7 +18933,8 @@ export default function () {
                 engine.aiPlain(() => get.effect(target, card, player, player)) > 0) || null;
             },
             aiRoute(player, hand, moved, enemy, future = false) {
-              const engine = lib.skill.xd_yuanyuan_engine;
+              // per：每用一张同类牌移去几张冤冤牌（平时 1，彭越翻倍后更多），按它算铺垫的牌够不够清空。
+              const engine = lib.skill.xd_yuanyuan_engine, per = engine.amount(player);
               if (!enemy?.isIn?.() || get.attitude(player, enemy) >= 0 || !moved.length) return null;
               if (future && (player.hasJudge?.("lebu") || player.isTurnedOver?.())) return null;
               const need = { basic: 0, trick: 0, equip: 0 };
@@ -18833,7 +18968,7 @@ export default function () {
                   // 换武器可能缩短攻击范围；首版不靠换武器后的假定距离安排斩杀。
                   if (get.subtype(card) === "equip1" && player.getEquip?.(1)) continue;
                   used.push(card);
-                  counts[type]--;
+                  counts[type] = Math.max(0, counts[type] - per);
                   if (name === "sha") shas++;
                   if (name === "tao") peaches++;
                   if (name === "jiu") wines++;
@@ -18864,10 +18999,10 @@ export default function () {
             },
             // pay：没有闪可接时，愿意用体力换摸牌的次数（你 10-25 14:36）。0 照旧：只在有明确卖血收益时挨一下。
             aiForecast(player, targets, hand, moved, pay = 0) {
-              const engine = lib.skill.xd_yuanyuan_engine;
+              const engine = lib.skill.xd_yuanyuan_engine, per = engine.amount(player);
               const dodges = engine.aiShans(player, hand);
               const remaining = moved.slice(), kept = hand.slice();
-              let spent = 0, hurt = 0, damage = 0, unprotectedHits = 0;
+              let spent = 0, hurt = 0, damage = 0, unprotectedHits = 0, draws = 0;
               for (const target of engine.sortTargets(targets)) {
                 const risk = engine.aiShaRisk(player, target);
                 if (!risk) return null;
@@ -18904,13 +19039,19 @@ export default function () {
                   kept.splice(kept.indexOf(card), 1);
                 }
                 // 原生杀要求“使用闪”；每张闪以及随后结算完的杀均可移去一张基本牌。
+                // 彭越翻倍后每次移去 per 张（不够就有几张移几张），你照样摸 per 张；draws 记这些杀结算时你摸了几张。
                 for (let i = 0; i < 1 + count; i++) {
-                  const index = remaining.findIndex(card => engine.cardType(card, player) === "basic");
-                  if (index < 0) break;
-                  remaining.splice(index, 1);
+                  let taken = 0;
+                  for (; taken < per; taken++) {
+                    const index = remaining.findIndex(card => engine.cardType(card, player) === "basic");
+                    if (index < 0) break;
+                    remaining.splice(index, 1);
+                  }
+                  if (!taken) break;
+                  draws += per;
                 }
               }
-              return { hand: kept, moved: remaining, spent, hurt, damage };
+              return { hand: kept, moved: remaining, spent, hurt, damage, draws };
             },
             aiRecruitRoute(player, forecast, enemy, circle, immediateDraws = 0) {
               const engine = lib.skill.xd_yuanyuan_engine;
@@ -18930,13 +19071,17 @@ export default function () {
                 if (!type) return null;
                 counts[type]++;
               }
-              const teamDraws = Math.min(counts.basic, allies) + Math.min(counts.trick, allies);
-              const remaining = forecast.moved.length - teamDraws;
+              // 每名队友一轮约用一张基本牌、一张锦囊牌，每张移去 per 张同类牌、你摸 per 张（平时 per 是 1）。
+              // remaining 是剩下的冤冤牌你下回合还要用几张牌才移得完。
+              const per = engine.amount(player), uses = n => Math.ceil(n / per);
+              const teamDraws = (Math.min(allies, uses(counts.basic)) + Math.min(allies, uses(counts.trick))) * per;
+              const remaining = uses(Math.max(0, counts.basic - allies * per)) +
+                uses(Math.max(0, counts.trick - allies * per)) + uses(counts.equip);
               const limit = player.getHandcardLimit ? player.getHandcardLimit() : player.hp;
               const retainedDraws = Math.min(immediateDraws, Math.max(0, limit - forecast.hand.length));
               const expectedDraws = (player.hasJudge?.("bingliang") ? 0 : 2) + teamDraws + retainedDraws;
               // 装备消耗不预支；预计回合外清空或下回合仍难清空时，只继续供牌，不急着加敌人。
-              if (expectedDraws < 4 || remaining < 1 || remaining > 2 || counts.equip > 1) return null;
+              if (expectedDraws < 4 || remaining < 1 || remaining > 2 || uses(counts.equip) > 1) return null;
               const attack = { name: "sha", isCard: true };
               if (player.getCardUsable("sha", true) <= 0 || !player.canUse(attack, enemy, undefined, false) ||
                 (enemy.hp > 1 && enemy.hasSkillTag?.("filterDamage", null, { player, card: attack })) ||
@@ -18964,7 +19109,8 @@ export default function () {
                 const trial = roster.includes(target) ? friends : friends.concat(target);
                 const forecast = engine.aiForecast(player, trial, hand, moved);
                 if (!forecast || forecast.hurt) continue;
-                const plan = engine.aiRecruitRoute(player, forecast, target, roster.concat(friends), moved.length - forecast.moved.length);
+                // 招募时那几张杀让你摸的牌（彭越翻倍后每次不止一张，不再等于移去的张数）。
+                const plan = engine.aiRecruitRoute(player, forecast, target, roster.concat(friends), forecast.draws);
                 if (plan && (!route || plan.score > route.score)) {
                   targets = trial;
                   enemy = target;
@@ -19195,12 +19341,16 @@ export default function () {
               for (const target of list) if (!result.includes(target)) result.push(target);
               return result;
             },
-            async drawCircle(owner) {
+            // “移去一张同类牌”“各摸一张牌”的张数。平时是 1；彭越拿到【冤冤】时，挠击翻倍让两处一起翻倍（不加累计）。
+            amount(player) {
+              return lib.xd_utils?.pengyue?.scale?.(player, "xd_yuanyuan", 1) ?? 1;
+            },
+            async drawCircle(owner, num = 1) {
               const drawers = [owner, ...lib.skill.xd_yuanyuan_engine.targets(owner, true)]
                 .filter((target, index, array) => target?.isIn?.() && array.indexOf(target) === index);
               if (!drawers.length) return;
-              if (typeof game.asyncDraw === "function") await game.asyncDraw(drawers, 1);
-              else for (const target of drawers) await target.draw(1);
+              if (typeof game.asyncDraw === "function") await game.asyncDraw(drawers, num);
+              else for (const target of drawers) await target.draw(num);
             },
             activateRevenge(owner) {
               const key = lib.skill.xd_yuanyuan_engine.turnKey();
@@ -19219,6 +19369,10 @@ export default function () {
             forced: true,
             mark: true,
             marktext: "冤",
+            // 彭越拿到时挠击可以翻倍的数字：“一张同类牌”“各摸一张牌”两处一起翻（见 engine.amount）。
+            // 被复制成别的名字时（如诲的代理技能），翻倍仍记在这个名字上。
+            xdLimitKey: "xd_yuanyuan",
+            xdDoubles: [{ label: "张数", base: 1 }],
             init(player) {
               lib.skill.xd_yuanyuan_engine.state(player);
               player.markSkill?.("xd_yuanyuan");
@@ -19347,24 +19501,26 @@ export default function () {
                   let candidates = engine.sameTypeMoved(player, trigger.card, trigger.player);
                   if (!candidates.length) return;
 
-                  let card = candidates[0];
-                  if (candidates.length > 1) {
+                  // 彭越翻倍后“一张”变 per 张。锁定技不能不移：同类牌不够 per 张时有几张移几张，摸牌仍是各摸 per 张。
+                  const per = engine.amount(player), count = Math.min(per, candidates.length);
+                  let cards = candidates.slice(0, count);
+                  if (candidates.length > count) {
                     const result = await player.chooseButton([
-                      "###冤冤###移去一张与" + get.translation(trigger.card) + "同类的冤冤牌",
+                      "###冤冤###移去" + get.cnNumber(count) + "张与" + get.translation(trigger.card) + "同类的冤冤牌",
                       [candidates, "card"]
-                    ], true).set("ai", button => 7 - get.value(button.link, player)).forResult();
+                    ], true, count).set("ai", button => 7 - get.value(button.link, player)).forResult();
                     if (!result?.bool || !result.links?.length) return;
-                    card = result.links[0];
+                    cards = result.links.slice(0, count);
                   }
 
                   player.logSkill("xd_yuanyuan", trigger.player === player ? undefined : trigger.player);
                   const before = engine.moved(player).length;
-                  const removed = await u.removeMovedOut(player, [card]);
+                  const removed = await u.removeMovedOut(player, cards);
                   if (!removed.length) return;
                   player.markSkill?.("xd_yuanyuan");
                   const emptied = before > 0 && engine.moved(player).length === 0;
 
-                  await engine.drawCircle(player);
+                  await engine.drawCircle(player, per);
                   if (emptied) engine.activateRevenge(player);
                 }
               }
@@ -20021,6 +20177,12 @@ export default function () {
             init(player, skill) {
               if (typeof player.storage[skill] !== "boolean") player.storage[skill] = false; // false=阳，true=阴
             },
+            // 彭越【挠击】翻倍：阳的“一张即时牌”和阴的“摸一张牌”是同一个张数（作者口径：翻倍描述里的数字）。
+            xdDoubles: [{ label: "张数", base: 1 }],
+            // 张数：没有彭越账本的角色恒为 1；翻倍一次 2、两次 4……
+            amount(player) {
+              return lib.xd_utils?.pengyue?.scale?.(player, "xd_hezong", 1) ?? 1;
+            },
             getLegalVCards(event, player) {
               if (!event || event.responded || typeof event.filterCard !== "function") return [];
               return get.inpileVCardList(info => {
@@ -20140,7 +20302,10 @@ export default function () {
             matchesLast(card, owner, last) {
               if (!card || !last?.name) return false;
               // 阳项没有实体牌可供他人“失去”，故此处按牌名对应；属性【杀】仍属于【杀】这一牌名。
-              return (get.name(card, owner) || card.name) === last.name;
+              const name = get.name(card, owner) || card.name;
+              if (name === last.name) return true;
+              // 翻倍后一次发动用了几张（记在 cards 里）：失去其中任一张的同名牌都算。
+              return Array.isArray(last.cards) && last.cards.some(used => used?.name === name);
             },
             matchingLosers(event, player) {
               const last = player.storage.xd_hezong_last;
@@ -20153,13 +20318,104 @@ export default function () {
                   .some(card => lib.skill.xd_hezong.matchesLast(card, target, last));
               });
             },
+            // 上次以此法使用的牌名：翻倍后一次发动可能用了几张（记在 cards 里），同名只算一次。
+            lastNames(last) {
+              if (!last?.name) return [];
+              if (!Array.isArray(last.cards) || !last.cards.length) return [last.name];
+              return [...new Set(last.cards.map(card => card?.name).filter(Boolean))];
+            },
+            // ===== 张数翻倍后一次发动连用几张（你 11-08：彭越拿到的技能都能翻倍）=====
+            // 第一张照原样从使用牌的询问里选；它整个结算完（含使用后的时机）后，可以接着视为使用即时牌，
+            // 每张重新选牌名和目标、必须当时能合法使用、随时可以停下，一共最多 m 张（m 在第一张被使用时定下）。
+            // 这期间【合纵】还是阳但不能再发动；“你上次以此法使用的牌”记这次发动用过的全部牌，转换只在结束时转一次。
+            // 发动没结束 = 此刻的事件还在第一张牌的事件之下（接续就挂在那张牌事件的 after 上）。
+            busy(player) {
+              const chain = player?._xd_hezong_chain;
+              if (!chain || chain.done) return false;
+              const event = _status.event;
+              return typeof event?.getParent === "function" && !!event.getParent(evt => evt === chain.event, true, true);
+            },
+            // 接着用的牌：此刻能主动使用的即时牌（有合法目标，受距离和次数限制，和 chooseUseTarget 的检查一致）。
+            // 闪、无懈这类只能响应的牌此刻用不出；桃只能对自己用（求桃的询问已经用掉了）。
+            chainVCards(player) {
+              return get.inpileVCardList(info => {
+                const card = get.autoViewAs({ name: info[2], nature: info[3], isCard: true }, "unsure");
+                const type = get.type(card, null, false);
+                if (type !== "basic" && type !== "trick") return false;
+                try {
+                  return player.hasUseTarget(card, null, true);
+                } catch (e) {
+                  return false;
+                }
+              });
+            },
+            // 接续挂在第一张牌事件的 after 上（本体技能的惯用法）：这张牌被取消、或者你在结算中阵亡，也照样收尾。
+            startChain(player, trigger, amount, used) {
+              const chain = { event: trigger, amount, cards: [used] };
+              player._xd_hezong_chain = chain;
+              const next = game.createEvent("xd_hezong_chain", false, trigger);
+              next.player = player;
+              next.forceDie = true;
+              next.includeOut = true;
+              next._xd_hezong_chain = chain;
+              trigger.next.remove(next);
+              trigger.after.push(next);
+              next.setContent(lib.skill.xd_hezong.chainContent);
+            },
+            async chainContent(event, trigger, player) {
+              const skill = lib.skill.xd_hezong, chain = event._xd_hezong_chain;
+              while (chain.cards.length < chain.amount && player.isIn() && player.hasSkill("xd_hezong")) {
+                const list = skill.chainVCards(player);
+                if (!list.length) break;
+                let plan;
+                const result = await player
+                  .chooseButton(["合纵：还可以视为使用" + get.cnNumber(chain.amount - chain.cards.length) + "张即时牌", [list, "vcard"]])
+                  .set("ai", button => {
+                    if (plan === undefined) {
+                      try {
+                        plan = skill.aiChainPlan(player, list);
+                      } catch (e) {
+                        plan = null;
+                      }
+                    }
+                    return plan && plan.key === button.link[2] + "|" + (button.link[3] || "") ? 10 : 0;
+                  })
+                  .forResult();
+                const link = result?.bool ? result.links?.[0] : null;
+                if (!link) break;
+                const card = { name: link[2], nature: link[3], isCard: true };
+                // 记在 xd_hezong_extra 名下：日志照样写“发动了【合纵】”并弹出牌名，又不会被当成新的一次发动。
+                const used = await player.chooseUseTarget({ card, logSkill: "xd_hezong_extra", prompt2: "合纵：取消则结束这次发动" }).forResult();
+                if (!used?.bool) break;
+                chain.cards.push({ name: get.name(card, player) || card.name, nature: get.nature(card, player) || card.nature || null });
+              }
+              skill.finishChain(player, chain);
+            },
+            // 这次发动结束：记下用过的全部牌（只用了一张时和原来一样只记一张），再转换一次。
+            finishChain(player, chain) {
+              if (!chain || chain.done) return;
+              chain.done = true;
+              if (player._xd_hezong_chain === chain) delete player._xd_hezong_chain;
+              const first = chain.cards[0];
+              const last = { name: first.name, nature: first.nature };
+              if (chain.cards.length > 1) last.cards = chain.cards.map(card => ({ name: card.name, nature: card.nature }));
+              player.storage.xd_hezong_last = last;
+              if (typeof player.syncStorage === "function") player.syncStorage("xd_hezong_last");
+              player.changeZhuanhuanji("xd_hezong");
+              if (player.hasSkill("xd_hezong")) player.markSkill("xd_hezong");
+            },
             filter(event, player) {
               if (player.storage.xd_hezong) return false;
+              // 翻倍后这次发动还在接着用：不能再发动一次。
+              if (lib.skill.xd_hezong.busy(player)) return false;
               return lib.skill.xd_hezong.getLegalVCards(event, player).length > 0;
             },
             chooseButton: {
               dialog(event, player) {
                 const list = lib.skill.xd_hezong.getLegalVCards(event, player);
+                // 张数翻倍后提示这次一共能用几张；没翻倍时照旧。
+                const amount = lib.skill.xd_hezong.amount(player);
+                if (amount > 1) return ui.create.dialog("合纵：视为使用一张即时牌（这次发动至多" + get.cnNumber(amount) + "张）", [list, "vcard"]);
                 return ui.create.dialog("合纵：视为使用一张即时牌", [list, "vcard"]);
               },
               filter(button, player) {
@@ -20209,6 +20465,7 @@ export default function () {
               // 当前事件已经是 chooseToUse，手里没有实体【无懈】时，本体会直接跳过该玩家，
               // 导致【合纵】根本拿不到发动窗口。因此阳状态下要提前声明可提供【无懈】。
               if (player.storage.xd_hezong) return false;
+              if (lib.skill.xd_hezong.busy(player)) return false;
               if (name === "wuxie") return true;
               const event = _status.event;
               if (!event || event.name !== "chooseToUse") return false;
@@ -20220,14 +20477,21 @@ export default function () {
                 const last = player.storage.xd_hezong_last;
                 let text = "当前项：" + (yin ? "阴" : "阳");
                 if (last?.name) {
-                  text += "<br>上次阳项使用：" + get.translation({ name: last.name, nature: last.nature, isCard: true });
+                  // 翻倍后一次发动用过几张时全列出来。
+                  const used = Array.isArray(last.cards) && last.cards.length > 1 ? last.cards : [last];
+                  text += "<br>上次阳项使用：" + used.map(card => get.translation({ name: card.name, nature: card.nature, isCard: true })).join("、");
                 }
+                // 彭越翻倍过：每次发动可用、阴项各摸的张数。
+                const amount = lib.skill.xd_hezong.amount(player);
+                if (amount > 1) text += "<br>张数：" + amount;
                 return text;
               }
             },
             group: ["xd_hezong_record", "xd_hezong_yin"],
             subSkill: {
               backup: {},
+              // 翻倍后接着用的牌记在这个名字下（见 chainContent）。
+              extra: { popname: true },
               record: {
                 charlotte: true,
                 forced: true,
@@ -20236,12 +20500,23 @@ export default function () {
                 trigger: { player: ["useCard1", "respond"] },
                 filter(event, player) {
                   if (player.storage.xd_hezong) return false;
+                  // 接着用的那几张不算新的一次发动。
+                  if (lib.skill.xd_hezong.busy(player)) return false;
                   const skill = event.skill || event.sourceSkill;
                   return skill === "xd_hezong_backup" || skill === "xd_hezong";
                 },
                 content(event, trigger, player) {
                   const name = get.name(trigger.card, player) || trigger.card?.name;
                   if (!name) return;
+                  // 张数 m>1（彭越翻倍过）：这一张结算后还能接着用，记牌和转换都留到这次发动结束（见 startChain）。
+                  const amount = lib.skill.xd_hezong.amount(player);
+                  if (amount > 1) {
+                    lib.skill.xd_hezong.startChain(player, trigger, amount, {
+                      name,
+                      nature: get.nature(trigger.card, player) || trigger.card?.nature || null
+                    });
+                    return;
+                  }
                   player.storage.xd_hezong_last = {
                     name,
                     nature: get.nature(trigger.card, player) || trigger.card?.nature || null
@@ -20267,10 +20542,12 @@ export default function () {
                   player.logSkill("xd_hezong", losers[0]);
                   const drawers = game.filterPlayer(target => target.hasSkill("xd_jizhi"));
                   if (drawers.length) {
+                    // “摸一张牌”跟着张数翻倍，按触发阴项的这名【合纵】持有者算。
+                    const amount = lib.skill.xd_hezong.amount(player);
                     if (typeof game.asyncDraw === "function") {
-                      await game.asyncDraw(drawers, 1);
+                      await game.asyncDraw(drawers, amount);
                     } else {
-                      for (const target of drawers) await target.draw(1);
+                      for (const target of drawers) await target.draw(amount);
                     }
                   }
                   if (player.hasSkill("xd_hezong")) {
@@ -20304,11 +20581,27 @@ export default function () {
               }
               return lib.skill.xd_hezong.aiOffTurnOk(player, event, list.map(info => info[2])) ? 8 : 0;
             },
+            // 电脑接着用哪张：和出牌阶段印第一张同一套挑法（xd_print_ai.plan，代价用 aiPrintCost），
+            // 只是这次发动已经用掉，停下也留不住阳项，“留着阳项”的代价记 0；收益不为正就停下。
+            aiChainPlan(player, list) {
+              const skill = lib.skill.xd_hezong;
+              const cards = list.map(info => ({ key: info[2] + "|" + (info[3] || ""), card: get.autoViewAs({ name: info[2], nature: info[3], isCard: true }, "unsure") }));
+              const memo = new Map();
+              return lib.skill.xd_print_ai.plan(player, cards, key => {
+                const name = key.split("|")[0];
+                if (!memo.has(name)) memo.set(name, skill.aiPrintCost(player, name, 0));
+                return memo.get(name);
+              });
+            },
             // ===== 刷新估计（v419，你 10-26 03:58，参考 Sol 6.1 的分析）=====
             // 一、谁在阴、等哪个牌名。
             aiWaits() {
-              return game.filterPlayer(current => current.hasSkill("xd_hezong") && current.storage.xd_hezong && current.storage.xd_hezong_last?.name)
-                .map(owner => ({ owner, name: owner.storage.xd_hezong_last.name }));
+              const skill = lib.skill.xd_hezong, waits = [];
+              for (const owner of game.filterPlayer(current => current.hasSkill("xd_hezong") && current.storage.xd_hezong && current.storage.xd_hezong_last?.name)) {
+                // 翻倍后一次发动用过几张：每个牌名都在等。
+                for (const name of skill.lastNames(owner.storage.xd_hezong_last)) waits.push({ owner, name });
+              }
+              return waits;
             },
             // 按 viewer 的立场：自己和队友算 1，敌人算 −1。
             aiSide(viewer, current) {
@@ -20329,7 +20622,8 @@ export default function () {
               let gain = 0;
               for (const wait of skill.aiWaits()) {
                 if (wait.name !== name || wait.owner === loser || !skill.sharedActivatedSkill(wait.owner, loser)) continue;
-                gain += skill.aiSide(viewer, wait.owner) + skill.aiDrawSide(viewer);
+                // 翻倍过的【合纵】（张数 m）：拿回的阳项能用 m 张，有【辑志】的各摸 m 张。
+                gain += skill.amount(wait.owner) * (skill.aiSide(viewer, wait.owner) + skill.aiDrawSide(viewer));
               }
               return gain;
             },
@@ -20359,7 +20653,8 @@ export default function () {
             aiPrintCost(player, name, hold) {
               const skill = lib.skill.xd_hezong;
               const p = skill.aiRefreshOdds(player, name, true);
-              return hold * (1 - p) - p * skill.aiDrawSide(player) * skill.aiCardEff(player) * 0.8;
+              // 张数 m（彭越翻倍过）：刷新时各摸 m 张。
+              return hold * (1 - p) - p * skill.amount(player) * skill.aiDrawSide(player) * skill.aiCardEff(player) * 0.8;
             },
             // 回合外（闪、桃、无懈）。没有同名真牌就印（濒死只救自己和队友）。有同名真牌时：
             // 出真牌能刷新别人、对己方有利 → 出真牌；会刷新敌人 → 改用印牌；没人在等 → 印了很快能刷新回来才印、留下真牌。
@@ -20378,7 +20673,8 @@ export default function () {
                 if (lose > 0) return false;
                 const p = skill.aiRefreshOdds(player, name, true);
                 // 单位：张。留下真牌 +1；这次阳项没了 −1.2（刷新回来就不算）；刷新时己方净摸牌；不出真牌也就不会刷新敌人。
-                best = Math.max(best, 1 - (1 - p) * 1.2 + p * skill.aiDrawSide(player) * 0.8 - lose);
+                // 刷新时各摸 m 张（张数翻倍过时）。
+                best = Math.max(best, 1 - (1 - p) * 1.2 + p * skill.amount(player) * skill.aiDrawSide(player) * 0.8 - lose);
               }
               return best > 0;
             },
@@ -20405,7 +20701,13 @@ export default function () {
               let events = 0;
               for (const owner of game.filterPlayer(current => current !== giver && current.hasSkill("xd_hezong"))) {
                 const last = owner.storage.xd_hezong_last;
-                events += owner.storage.xd_hezong && last?.name ? skill.aiRefreshOdds(owner, last.name) : 0.4;
+                // 翻倍过的【合纵】一次刷新各摸 m 张；上次用了几张时，失去其中任一牌名都能刷新。
+                let odds = 0.4;
+                if (owner.storage.xd_hezong && last?.name) {
+                  const names = skill.lastNames(last);
+                  odds = names.length > 1 ? 1 - names.reduce((miss, name) => miss * (1 - skill.aiRefreshOdds(owner, name)), 1) : skill.aiRefreshOdds(owner, last.name);
+                }
+                events += skill.amount(owner) * odds;
               }
               return (2.5 * events + 0.3) * skill.aiCardEff(giver);
             },
@@ -20431,6 +20733,7 @@ export default function () {
               save: true,
               skillTagFilter(player, tag) {
                 if (player.storage.xd_hezong) return false;
+                if (lib.skill.xd_hezong.busy(player)) return false;
                 const event = _status.event;
                 if (!event || event.name !== "chooseToUse") return false;
                 const need = tag === "respondSha" ? "sha" : tag === "respondShan" ? "shan" : null;
@@ -24937,6 +25240,27 @@ export default function () {
             xdLimitBase() {
               return 1;
             },
+            // 彭越【挠击】翻倍时，“调整一张”的张数也跟着翻（作者口径：翻倍描述里的数字）。
+            xdDoubles: [{ label: "调整张数", base: 1 }],
+            // 调整的张数：没有彭越账本的角色恒为 1；翻倍一次 2、两次 4……
+            amount(player) {
+              return lib.xd_utils?.pengyue?.scale?.(player, "xd_xiangfu", 1) ?? 1;
+            },
+            discardableCount(player) {
+              return player?.getCards("h").filter(card => {
+                try {
+                  return lib.filter.cardDiscardable(card, player);
+                } catch (e) {
+                  return true;
+                }
+              }).length || 0;
+            },
+            // 多的一方这次弃几张：一张时照旧；m 张时不够就弃完能弃的。
+            discardAmount(player, target, before) {
+              const skill = lib.skill.xd_xiangfu, m = skill.amount(player);
+              if (m === 1 || !before) return 1;
+              return Math.max(1, Math.min(m, skill.discardableCount(before > 0 ? player : target)));
+            },
             getState(player) {
               const round = Math.max(0, Math.floor(Number(game.roundNumber) || 0));
               const names = ["sha", "jiu", "shan", "tao"];
@@ -24986,7 +25310,10 @@ export default function () {
             getRelation(player, target) {
               if (!player || !target || player === target) return null;
               const before = player.countCards("h") - target.countCards("h");
-              const after = before === 0 ? 0 : before - 2 * Math.sign(before);
+              // 调整 m 张（彭越翻倍过）：多的一方弃 d 张、少的一方摸 m 张；m=1 时就是原来的 ±2。
+              const skill = lib.skill.xd_xiangfu, m = skill.amount(player);
+              const step = m === 1 ? 2 : skill.discardAmount(player, target, before) + m;
+              const after = before === 0 ? 0 : before - step * Math.sign(before);
               let name;
               if (after === before) name = "tao";
               else if (after === 0) name = "jiu";
@@ -25072,26 +25399,30 @@ export default function () {
               lib.skill.xd_xiangfu.sync(player);
             },
             async adjust(player, target, relation) {
+              // 调整 m 张（彭越翻倍过）：多的一方弃 d 张（不够 m 张就弃完能弃的）、少的一方摸 m 张；m=1 时照旧各一张。
+              const skill = lib.skill.xd_xiangfu, m = skill.amount(player);
+              const d = skill.discardAmount(player, target, relation.before);
+              const prompt = "【相赴】：你的手牌数较多，弃置" + (d === 1 ? "一" : get.cnNumber(d)) + "张手牌";
               if (relation.before > 0) {
                 const discarded = await player.chooseToDiscard(
                   "h",
-                  1,
+                  d,
                   true,
                   card => lib.filter.cardDiscardable(card, player),
-                  "【相赴】：你的手牌数较多，弃置一张手牌"
+                  prompt
                 ).forResult();
                 if (!discarded?.bool) return false;
-                if (target.isIn()) await target.draw(1);
+                if (target.isIn()) await target.draw(m);
               } else if (relation.before < 0) {
                 const discarded = await target.chooseToDiscard(
                   "h",
-                  1,
+                  d,
                   true,
                   card => lib.filter.cardDiscardable(card, target),
-                  "【相赴】：你的手牌数较多，弃置一张手牌"
+                  prompt
                 ).forResult();
                 if (!discarded?.bool) return false;
-                if (player.isIn()) await player.draw(1);
+                if (player.isIn()) await player.draw(m);
               }
               return true;
             },
