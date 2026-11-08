@@ -10872,6 +10872,340 @@ function createXdMenghuoAi() {
 
 
 
+// 张华【剑合】（配合【弼昏】【穿屋】）电脑出牌（11-08，你 11-07 12:56 "直接做"）。弼昏、剑合是本体技能，穿屋是扩展改过的
+// （只在造成伤害后）；只改电脑（含托管）的决定，技能文字、规则、玩家操作一律不动。牌值一律用扩展里已有的价目：
+// 手牌的价 xd_huanwen_ai.prices / xd_ai_keep，一张新牌 W，装备 xd_huanwen_ai.equipCost，掉血、打死 xd_ai_core（和南蛮万箭同一套）。
+// 规则：弼昏＝手牌比上限多时，用牌指定别人会被取消（只有一个目标时他拿走这张牌）——所以出牌阶段开头摸完牌，手牌比上限多两张以上
+// 就打不了人。剑合＝出牌阶段每人限一次，重铸至少两张同名牌或至少两张装备，那人选：重铸同样多张同一类的牌，或者挨他 1 点雷电伤害。
+// 穿屋（扩展）＝他造成伤害后，武将牌上前 X 个技能（弼昏、剑合、穿屋，X＝攻击范围）这回合失效，摸 X 张。
+// 所以剑合打出伤害＝穿屋：弼昏失效（这回合手里的牌都打得出去）＋摸牌。
+// 本体电脑的毛病：剑合估对方能不能重铸的那一步把一叠牌当数字减（he − known.length），算出来是 NaN，永远当对方会挨打；
+// 结果常对着手里一大把基本牌的人用基本牌剑合（人家重铸了事）。挑牌只看“牌值低于 7”，不看对方接不接得住。
+// 账（单位：张）：一次剑合（挑哪几张、对谁）＝自己重铸（摸 N 张 − 这几张的价）
+//   + 对方重铸的机会 ×（敌人重铸亏一点：基本、锦囊每张 0.1，装备 0.3）
+//   + 对方挨打的机会 ×（挨这一下的价（掉血、1 血按打死／救人，同南蛮万箭；连着铁索的一起算）＋穿屋：摸 X 张，弼昏卡着时解开）。
+//   对方接不接得住：看得见的这一类的牌＋看不见的手牌里这一类的机会（基本 0.4、锦囊 0.25、装备 0.1；装着的装备都算），
+//   卖血的人（2 血以上）当会挨打。对自己用也算：重铸完手里同一类不够就挨这一下，穿屋照样发动。
+//   弼昏卡着时“解开”值多少：手里能打人的牌（杀、拆、顺按现在打出去比留着多赚的，别的打人锦囊 0.3）；
+//   装备、桃（受伤时）能先用掉解开的不算；有队友时最多值“给队友几张牌”的价（每张 0.5）。赚 0.3 张以上才用。
+function createXdZhanghuaAi() {
+  const A = {
+    margin: 0.3,
+    shares: { basic: 0.4, trick: 0.25, equip: 0.1 },
+    recastLoss: { basic: 0.1, trick: 0.1, equip: 0.3 },
+    lossJianhe: 0.3,
+    giftCost: 0.5,
+    otherTrick: 0.3,
+    blockedOrder: 11,
+    order: 4,
+    selfNames: ["tao", "jiu", "wuzhong", "shan", "wuxie", "shandian"],
+    num(v, d) {
+      return typeof v === "number" && Number.isFinite(v) ? v : d;
+    },
+    H() {
+      return lib.skill.xd_huanwen_ai;
+    },
+    human(player) {
+      return !player || !!lib.skill.xd_ai_core?.humanActing?.(player);
+    },
+    has(player, skill) {
+      try {
+        return !!player.hasSkill(skill);
+      } catch (e) {
+        return false;
+      }
+    },
+    limit(player) {
+      try {
+        return A.num(player.getHandcardLimit(), player.hp);
+      } catch (e) {
+        return player.hp;
+      }
+    },
+    // 弼昏卡着：下一张牌用出去以后手牌还比上限多。
+    blocked(player) {
+      return A.has(player, "olbihun") && player.countCards("h") > A.limit(player) + 1;
+    },
+    type(card) {
+      const t = get.type(card);
+      return t === "delay" ? "trick" : t;
+    },
+    phase(player) {
+      let evt = null;
+      try {
+        evt = _status.event?.getParent?.("phaseUse");
+      } catch (e) {}
+      return evt && evt.name === "phaseUse" && evt.player === player ? evt : null;
+    },
+    linked(target) {
+      try {
+        return typeof target.isLinked === "function" ? !!target.isLinked() : !!target.linked;
+      } catch (e) {
+        return false;
+      }
+    },
+    // t 挨他 1 点伤害，t 那边亏多少（同南蛮万箭：卖血的 2 血以上反而赚；1 血按打死／救人）。
+    hit(player, t, side) {
+      const core = lib.skill.xd_ai_core;
+      const mx = core.maixie(player, t), h = core.hpOf(t), w = side.get(t) ?? 0;
+      if (mx && h >= 2) return 1.5 - core.gain;
+      if (t === player || w > 0.3) return core.ownHpCost(player, h, t);
+      if (h >= 2) return core.hpCost(h);
+      return w < -0.3 ? core.killDyingCost(player, t, mx) : core.dyingCost(player, t, mx);
+    },
+    // t 挨他 1 点雷电伤害，我们这边赚多少（连着铁索的一起挨）。
+    damage(player, t, side) {
+      const weight = x => (x === player ? 1 : side.get(x) ?? 0);
+      let v = -weight(t) * A.hit(player, t, side);
+      if (A.linked(t)) {
+        for (const other of game.filterPlayer(x => x !== t && A.linked(x))) v -= weight(other) * A.hit(player, other, side);
+      }
+      return v;
+    },
+    // 穿屋这一下：前 X 个还没失效的技能（武将牌上的顺序）。
+    chuanwuSkills(player) {
+      if (!A.has(player, "olchuanwu")) return [];
+      let range = 0;
+      try {
+        range = A.num(player.getAttackRange(), 0);
+      } catch (e) {}
+      if (range <= 0) return [];
+      let list = [];
+      try {
+        list = game.filterSkills(player.getStockSkills(true, true).filter(skill => {
+          const info = get.info(skill);
+          return !info?.persevereSkill || !info?.charlotte;
+        }), player);
+      } catch (e) {
+        list = ["olbihun", "oljianhe", "olchuanwu"].filter(skill => A.has(player, skill));
+      }
+      return list.slice(0, Math.min(range, list.length));
+    },
+    // 他造成伤害（穿屋发动）值多少：摸 X 张；弼昏卡着时解开；剑合跟着失效，这阶段不能再剑合别人。
+    chuanwu(player, W, unblock) {
+      const skills = A.chuanwuSkills(player);
+      let v = skills.length * W;
+      if (skills.includes("olbihun")) v += unblock;
+      if (skills.includes("oljianhe")) v -= A.lossJianhe;
+      return v;
+    },
+    // 弼昏卡着时解开值多少（见文件头）。
+    unblock(player, side, ymap, kmap) {
+      if (!A.blocked(player)) return 0;
+      const hand = player.getCards("h");
+      const need = hand.length - (A.limit(player) + 1);
+      let shed = hand.filter(card => get.type(card) === "equip").length;
+      if (player.isDamaged()) shed += Math.min(player.maxHp - player.hp, hand.filter(card => get.name(card, player) === "tao").length);
+      if (shed >= need) return 0;
+      let gain = 0;
+      for (const card of hand) {
+        const name = get.name(card, player);
+        if (get.type(card) === "equip" || A.selfNames.includes(name)) continue;
+        if (["sha", "guohe", "shunshou"].includes(name)) gain += Math.max(0, A.num(ymap.get(card), 0) - A.num(kmap.get(card), 0));
+        else gain += A.otherTrick;
+      }
+      const mate = game.hasPlayer(t => t !== player && (side.get(t) ?? 0) > 0.3);
+      return mate ? Math.min(gain, (need - shed) * A.giftCost) : gain;
+    },
+    // k 张已知、n 张看不见（每张是这一类的机会 p），凑得够 N 张的机会。
+    atLeast(k, n, p, N) {
+      if (k >= N) return 1;
+      const need = N - k;
+      if (need > n || !(p > 0)) return 0;
+      let tail = 0;
+      for (let i = need; i <= n; i++) {
+        let c = 1;
+        for (let j = 1; j <= i; j++) c = (c * (n - i + j)) / j;
+        tail += c * Math.pow(p, i) * Math.pow(1 - p, n - i);
+      }
+      return Math.min(1, tail);
+    },
+    // 对方（不是他自己）重铸得出 N 张 type 的机会：看得见的＋看不见的手牌里的机会；装着的装备都算。
+    recastChance(player, t, type, N) {
+      const core = lib.skill.xd_ai_core;
+      let known = [];
+      try {
+        known = core.known(player, t) || [];
+      } catch (e) {}
+      const ok = card => {
+        if (A.type(card) !== type) return false;
+        if (type === "equip") return true;
+        let v = 5;
+        try {
+          v = A.num(get.value(card, t), 5);
+        } catch (e) {}
+        return v < 7;
+      };
+      const hand = known.filter(card => get.position(card) === "h");
+      let k = hand.filter(ok).length;
+      if (type === "equip") k += t.countCards("e");
+      const n = Math.max(0, t.countCards("h") - hand.length);
+      return A.atLeast(k, n, A.shares[type] ?? 0.2, N);
+    },
+    // 可选的几叠：同名的（不是装备）、装备；每叠按价从低到高排好。
+    groups(player, price) {
+      const out = [];
+      const byName = new Map();
+      for (const card of player.getCards("h")) {
+        if (get.type(card) === "equip") continue;
+        const name = get.name(card);
+        if (!byName.has(name)) byName.set(name, []);
+        byName.get(name).push(card);
+      }
+      for (const list of byName.values()) if (list.length >= 2) out.push(list.sort((a, b) => price(a) - price(b)));
+      const equips = player.getCards("he", card => get.type(card) === "equip");
+      if (equips.length >= 2) out.push(equips.sort((a, b) => price(a) - price(b)));
+      return out;
+    },
+    // 这一次剑合：{ cards, target, value }；不用时 null。
+    plan(player) {
+      if (!A.has(player, "oljianhe") || !A.phase(player)) return null;
+      const core = lib.skill.xd_ai_core;
+      let used = [];
+      try {
+        used = player.getStorage("oljianhe_used") || [];
+      } catch (e) {}
+      const targets = game.filterPlayer(t => !used.includes(t));
+      if (!targets.length) return null;
+      const hand = player.getCards("h");
+      const c = A.H().ctx(player, hand), W = A.num(c.X?.W, 0.8), side = c.X.side;
+      const ymap = A.H().prices(c, hand);
+      let kmap = new Map();
+      try {
+        kmap = lib.skill.xd_ai_keep.values(player, hand, "use", c.threat);
+      } catch (e) {}
+      const price = card => (get.position(card) === "e" ? A.num(A.H().equipCost(player, card), 1) : A.num(ymap.get(card), 0.6));
+      const chuan = A.chuanwu(player, W, A.unblock(player, side, ymap, kmap));
+      const groups = A.groups(player, price);
+      let best = null;
+      for (const list of groups) {
+        const type = A.type(list[0]);
+        for (let N = 2; N <= list.length; N++) {
+          const cards = list.slice(0, N);
+          let self = 0;
+          for (const card of cards) self += W - price(card);
+          for (const t of targets) {
+            let v;
+            if (t === player) {
+              // 他自己接：重铸完手里（加上新摸的 N 张）同一类的够 N 张就再重铸一遍（便宜的牌换新牌），不够就挨这一下（穿屋照样发动）。
+              const rest = player.getCards("he", card => !cards.includes(card) && A.type(card) === type && (type === "equip" || A.num(get.value(card, player), 5) < 7));
+              const pr = A.atLeast(rest.length, N, A.shares[type] ?? 0.2, N);
+              let again = 0;
+              if (rest.length >= N) {
+                const sorted = rest.sort((a, b) => price(a) - price(b)).slice(0, N);
+                for (const card of sorted) again += W - price(card);
+              }
+              v = self + pr * again + (1 - pr) * (A.damage(player, t, side) + chuan);
+            } else {
+              const mx = core.maixie(player, t), h = core.hpOf(t);
+              const pr = mx && h >= 2 ? 0 : A.recastChance(player, t, type, N);
+              const w = side.get(t) ?? 0;
+              v = self + pr * (-w * N * (A.recastLoss[type] ?? 0.1)) + (1 - pr) * (A.damage(player, t, side) + chuan);
+            }
+            if (!best || v > best.value) best = { cards, target: t, value: v };
+          }
+        }
+      }
+      return best && best.value > A.margin ? best : null;
+    },
+    key(player) {
+      let used = [];
+      try {
+        used = player.getStorage("oljianhe_used") || [];
+      } catch (e) {}
+      return [
+        Number(game.phaseNumber) || 0,
+        player.getCards("he").map(card => card.cardid).join(),
+        player.hp,
+        player.maxHp,
+        used.map(t => t.playerid).join(),
+        ["olbihun", "oljianhe", "olchuanwu"].map(skill => (A.has(player, skill) ? 1 : 0)).join(""),
+        game.players.map(t => t.hp + ":" + t.countCards("he") + (A.linked(t) ? "L" : "")).join()
+      ].join("|");
+    },
+    // 同一局面只算一次。
+    planOf(player) {
+      const key = A.key(player);
+      if (player._xd_zhanghua?.key === key) return player._xd_zhanghua.plan;
+      let plan = null;
+      A._busy = (A._busy || 0) + 1;
+      try {
+        plan = A.plan(player);
+      } catch (e) {
+        plan = null;
+      } finally {
+        A._busy--;
+      }
+      player._xd_zhanghua = { key, plan };
+      return plan;
+    },
+    // ---- 接到本体剑合上的钩子：返回 undefined 时照本体原来的写法（玩家自己操作时就是这样）----
+    orderOf(player) {
+      player = player || _status.event?.player;
+      if (!player || A.human(player)) return undefined;
+      if (A._busy) return 0;
+      if (!A.planOf(player)) return 0;
+      return A.blocked(player) ? A.blockedOrder : A.order;
+    },
+    pick(player, card) {
+      if (!player || A.human(player)) return undefined;
+      const plan = A.planOf(player);
+      if (!plan) return -1;
+      const i = plan.cards.indexOf(card);
+      return i < 0 ? -1 : 20 - i;
+    },
+    // 对谁：规划里的那个人（乘上态度以后）正分，别人负分。
+    targetOf(player, target) {
+      if (!player || A.human(player)) return undefined;
+      const plan = A.planOf(player);
+      if (!plan) return undefined;
+      let att = 0;
+      try {
+        att = get.attitude(player, target);
+      } catch (e) {}
+      const sign = att > 0 ? 1 : att < 0 ? -1 : 0;
+      return target === plan.target ? sign * 10 : -sign * 10;
+    },
+    install() {
+      const info = lib.skill.oljianhe;
+      if (!info || info._xd_zhanghua) return;
+      if (info.ai) {
+        const order = info.ai.order;
+        info.ai.order = function (item, player) {
+          try {
+            const v = lib.skill.xd_zhanghua_ai.orderOf(player);
+            if (typeof v === "number") return v;
+          } catch (e) {}
+          return typeof order === "function" ? order.apply(this, arguments) : order;
+        };
+        const result = info.ai.result;
+        if (result && typeof result === "object") {
+          const target = result.target;
+          result.target = function (player, t) {
+            try {
+              const v = lib.skill.xd_zhanghua_ai.targetOf(player, t);
+              if (typeof v === "number") return v;
+            } catch (e) {}
+            return typeof target === "function" ? target.apply(this, arguments) : target;
+          };
+        }
+      }
+      const check = info.check;
+      info.check = function (card) {
+        try {
+          const v = lib.skill.xd_zhanghua_ai.pick(_status.event?.player, card);
+          if (typeof v === "number") return v;
+        } catch (e) {}
+        return typeof check === "function" ? check.apply(this, arguments) : 0;
+      };
+      info._xd_zhanghua = true;
+    }
+  };
+  return A;
+}
+
+
+
 // 玄蝶当前帖子版的8名旧将：直接复用本体未改动技能，只覆盖人物规格与发生变化的技能。
 // 使用本体原 character ID，避免同名复制；扩展开启时以本帖规则覆盖本体现行版本。
 function createXdLegacyPack() {
@@ -18643,6 +18977,9 @@ function createXdLegacyPack() {
     // 孟获【蛮王】【叛侵】的出牌规划（见 createXdMenghuoAi）；蛮王、叛侵是本体技能，这里接上先后、发不发动、挑牌和叛侵用不用。
     lib.skill.xd_menghuo_ai = createXdMenghuoAi();
     lib.skill.xd_menghuo_ai.install();
+    // 张华【剑合】的出牌规划（见 createXdZhanghuaAi）；剑合是本体技能，这里接上先后、挑哪几张、对谁。
+    lib.skill.xd_zhanghua_ai = createXdZhanghuaAi();
+    lib.skill.xd_zhanghua_ai.install();
     // 记下每名角色出牌阶段结束时手里的牌（你 11-02 12:48，谢安记牌用）：熬过出牌阶段的牌，电脑多半是留着不用的闪、桃、无懈、杀。
     lib.skill.xd_buping_memo = {
       charlotte: true,
