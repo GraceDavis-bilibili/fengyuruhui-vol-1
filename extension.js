@@ -8230,6 +8230,644 @@ function createXdPengyue() {
   return { P, skills };
 }
 
+// 吕雉【君侧】电脑出牌（11-08，你 11-07 12:56 "直接做"）：每次要出牌时，在她真实的手牌上把这个出牌阶段往下算到底，
+// 挑出最值的第一步（转化哪张、当什么牌、两侧往哪边并），走一步再重算。规则只用君侧代码本身的算法；
+// 牌值一律用扩展里已有的统一价目（留牌价 xd_ai_keep、掉血价 xd_ai_core、杀和拆的价 xd_ai_goude），不另立价目。
+// 只影响电脑（含托管）；技能文字、玩家操作一律不动。
+function createXdJunceAi() {
+  const N = ["sha", "jiu", "tiesuo", "shan", "tao", "guohe"];
+  const SHA = 0, JIU = 1, TS = 2, SHAN = 3, TAO = 4, GH = 5;
+  // ---- 规则（与 xd_junce.normalizeMask / getSides / getMoveChoices / getOptions 同义）----
+  const norm = m => {
+    m &= 63;
+    if (!(m & 1)) m = 63 ^ m;
+    return m <= 0 || m >= 63 ? 7 : m;
+  };
+  const sideOf = (m, i) => ((m >> i) & 1 ? 0 : 1);
+  const sideSize = (m, s) => {
+    let k = 0;
+    for (let i = 0; i < 6; i++) if (sideOf(m, i) === s) k++;
+    return k;
+  };
+  // 牌名 a 当成另一侧的 t 用以后，两种并法：source＝a 移到 t 那侧，target＝t 移到 a 那侧（原来那侧要剩至少一个）。
+  function moves(m, a, t) {
+    const out = [], sa = sideOf(m, a), st = sideOf(m, t);
+    if (sa === st) return out;
+    if (sideSize(m, sa) > 1) out.push({ key: "source", m: norm(sa === 0 ? m & ~(1 << a) : m | (1 << a)) });
+    if (sideSize(m, st) > 1) out.push({ key: "target", m: norm(st === 0 ? m & ~(1 << t) : m | (1 << t)) });
+    return out;
+  }
+  // 出牌阶段这个牌名此刻规则上能不能用（决定“唯一”）；c = { sha 剩几次, jiu 用过没, hp, g 用过几张过河, drunk }。
+  function ruleAlive(S, c, i) {
+    switch (i) {
+      case SHA: return c.sha > 0 && S.shaRule;
+      case JIU: return !c.jiu;
+      case TS: return true;
+      case SHAN: return false;
+      case TAO: return c.hp < S.maxHp;
+      case GH: return S.ghRule;
+    }
+    return false;
+  }
+  // 电脑真会把它用出去（本体的出牌 AI 会接受的目标）：只用来删掉本体会拒绝的出口，不影响“唯一”。
+  function execOK(S, c, i, st) {
+    switch (i) {
+      case SHA: return S.shaExec;
+      case JIU: return S.jiuGate && !!st && st.n[SHA] > 0 && c.sha > 0 && S.shaExec; // 酒只在后面跟得上一张真杀时才用
+      case TS: return S.tsExec;
+      case TAO: return true;
+      case GH: return S.ghExec && c.g < S.G.length;
+    }
+    return false;
+  }
+  // 另一侧（T）的材料能当成什么：T 侧此刻能用的牌名恰好一个 → 无中生有；两个以上 → 各自本名。
+  function exitsTo(S, m, c, T, st) {
+    const alive = [];
+    for (let i = 0; i < 6; i++) if (sideOf(m, i) === T && ruleAlive(S, c, i)) alive.push(i);
+    if (alive.length === 1) return [{ use: "wz", base: alive[0] }];
+    const out = [];
+    for (const i of alive) if (execOK(S, c, i, st)) out.push({ use: i, base: i });
+    return out;
+  }
+  const applyUse = (c, use) => {
+    const d = { sha: c.sha, jiu: c.jiu, hp: c.hp, g: c.g, drunk: c.drunk };
+    if (use === SHA) {
+      d.sha--;
+      d.drunk = false;
+    } else if (use === JIU) {
+      d.jiu = true;
+      d.drunk = true;
+    } else if (use === TAO) d.hp++;
+    else if (use === GH) d.g++;
+    return d;
+  };
+  const ck = c => "" + c.sha + (c.jiu ? 1 : 0) + (c.drunk ? 1 : 0) + c.hp + c.g;
+  // 本体酒的 useful（留牌层按 useful/5 给价）：保命时的酒价。
+  const jiuUseful = (hp, i) => (hp > 1 ? (i === 0 ? 4 : 1) : i === 0 ? 7.3 : 3);
+  function poisson(lambda, size) {
+    const out = [];
+    let term = Math.exp(-lambda), sum = 0;
+    for (let i = 0; i < size - 1; i++) {
+      out.push(term);
+      sum += term;
+      term = (term * lambda) / (i + 1);
+    }
+    out.push(Math.max(0, 1 - sum));
+    return out;
+  }
+
+  // ---- 估值（单位：张；每张牌只按它最后的去处算一次）----
+  function tables(S) {
+    const T = { exits: new Map(), fuelN: new Map(), W: new Map(), nt: new Map() };
+    const exits = (m, c, a) => {
+      const k = m + "|" + ck(c) + "|" + a;
+      let r = T.exits.get(k);
+      if (!r) {
+        r = exitsTo(S, m, c, 1 - sideOf(m, a), null);
+        T.exits.set(k, r);
+      }
+      return r;
+    };
+    const vNow = (c, e, wz) => (e.use === "wz" ? wz : e.use === SHA ? S.shaV[c.drunk ? 1 : 0] : e.use === GH ? S.G[c.g] ?? 0 : e.use === TAO ? S.heal(c.hp) : e.use === TS ? S.tsV : 0);
+    const vNext = (c, e) => (e.use === "wz" ? S.wzNext : e.use === SHA ? S.attackNext : e.use === GH ? S.ghNext : e.use === TAO ? S.heal(c.hp) : 0);
+    const nextCtx = hp1 => ({ sha: S.shaNextUses, jiu: false, hp: hp1, g: 0, drunk: false });
+    // 下回合摸到的一张不知道的牌，靠君侧比留着多值多少。
+    const fuelNext = (m, c) => {
+      const k = m + "|" + ck(c);
+      let r = T.fuelN.get(k);
+      if (r === undefined) {
+        r = 0;
+        for (let a = 0; a < 6; a++) {
+          let b = 0;
+          for (const e of exits(m, c, a)) b = Math.max(b, vNext(c, e));
+          r += S.p[a] * Math.max(0, b - S.kvFresh[a]);
+        }
+        T.fuelN.set(k, r);
+      }
+      return r;
+    };
+    const natNow = (c, a, w) => {
+      switch (a) {
+        case SHA: return c.sha > 0 && S.shaExec ? S.shaV[c.drunk ? 1 : 0] : 0;
+        case TAO: return c.hp < S.maxHp ? S.heal(c.hp) : 0;
+        case GH: return S.ghExec && c.g < S.G.length ? S.G[c.g] : 0;
+        case TS: return Math.max(S.tsExec ? S.tsV : 0, S.recastV * w);
+      }
+      return 0;
+    };
+    // 这回合新摸到、还没看到的一张牌值几张：有格子 = max(留着, 现在用, 现在君侧, 下回合君侧)；
+    // 没格子 = max(现在用, 现在君侧)（不然弃掉＝0）。里面的无中按 2(1−b)·w 算，w 封顶 1（总纲⑥：无中 = 2 张）。
+    const W = (m, c, inSlot) => {
+      const k = m + "|" + ck(c) + "|" + (inSlot ? 1 : 0);
+      let r = T.W.get(k);
+      if (r === undefined) {
+        const cn = nextCtx(c.hp);
+        let w = 1;
+        for (let it = 0; it < 6; it++) {
+          let s = S.pOther * S.unseenKeep;
+          for (let a = 0; a < 6; a++) {
+            let b = natNow(c, a, w);
+            for (const e of exits(m, c, a)) b = Math.max(b, vNow(c, e, S.wz * w));
+            if (inSlot) {
+              b = Math.max(b, S.kvFresh[a]);
+              for (const e of exits(m, cn, a)) b = Math.max(b, vNext(cn, e));
+            }
+            s += S.p[a] * b;
+          }
+          w = Math.min(1, s);
+        }
+        r = w;
+        T.W.set(k, r);
+      }
+      return r;
+    };
+    // 下回合：留下的已知牌逐张试（照常用、或君侧转化，按“用掉的价 − 留着的价”加），再加两张摸牌的燃料。
+    const inner = new Map();
+    const nt = (m, k, hp1) => {
+      const key = m + "|" + k.join("") + "|" + hp1;
+      let r = T.nt.get(key);
+      if (r !== undefined) return r;
+      const go = (mm, n, c) => {
+        const ik = mm + "|" + n.join("") + "|" + ck(c);
+        let v = inner.get(ik);
+        if (v !== undefined) return v;
+        const pSha = c.sha > 0 ? S.pShaNext : 0;
+        v = 2 * (pSha * fuelNext(mm, { ...c, sha: 0 }) + (1 - pSha) * fuelNext(mm, c));
+        const kvOf = a => S.mats[a][S.mats[a].length - n[a]];
+        if (n[SHA] > 0 && c.sha > 0 && S.shaExec) {
+          const n2 = n.slice();
+          n2[SHA]--;
+          let c2 = applyUse(c, SHA), g = S.attackNext - kvOf(SHA);
+          if (n2[JIU] > 0 && !c.jiu) {
+            g = S.attackNextDrunk - kvOf(SHA) - S.mats[JIU][S.mats[JIU].length - n2[JIU]];
+            n2[JIU]--;
+            c2 = { ...c2, jiu: true };
+          }
+          v = Math.max(v, g + go(mm, n2, c2));
+        }
+        if (n[TAO] > 0 && c.hp < S.maxHp) {
+          const n2 = n.slice();
+          n2[TAO]--;
+          v = Math.max(v, S.heal(c.hp) - kvOf(TAO) + go(mm, n2, applyUse(c, TAO)));
+        }
+        if (n[GH] > 0 && S.ghExec) {
+          const n2 = n.slice();
+          n2[GH]--;
+          v = Math.max(v, S.ghNext - kvOf(GH) + go(mm, n2, c));
+        }
+        if (n[TS] > 0) {
+          const n2 = n.slice();
+          n2[TS]--;
+          v = Math.max(v, S.recastV - kvOf(TS) + go(mm, n2, c));
+        }
+        for (let a = 0; a < 6; a++) {
+          if (!n[a]) continue;
+          const kv = S.mats[a][S.mats[a].length - n[a]];
+          for (const e of exitsTo(S, mm, c, 1 - sideOf(mm, a), { n })) {
+            const g = vNext(c, e) - kv;
+            const n2 = n.slice();
+            n2[a]--;
+            const c2 = e.use === "wz" ? c : applyUse(c, e.use);
+            for (const mv of moves(mm, a, e.base)) v = Math.max(v, g + go(mv.m, n2, c2));
+          }
+        }
+        inner.set(ik, v);
+        return v;
+      };
+      r = go(m, k.slice(), nextCtx(hp1));
+      T.nt.set(key, r);
+      return r;
+    };
+    return { exits, vNow, W, nt };
+  }
+  // 搜索到头时这个局面值几张：留得住的已知牌（手牌上限内）＋新摸的牌＋下回合＋自救能力。
+  function makeTerminal(S, X, n0) {
+    const order = [];
+    S.mats.forEach((l, a) => l.forEach((kv, j) => order.push([kv, a, j])));
+    S.otherKept.forEach(kv => order.push([kv, -1, 0]));
+    order.sort((x, y) => y[0] - x[0]);
+    return st => {
+      const c = st.c;
+      const wIn = X.W(st.m, c, true), wOut = X.W(st.m, c, false);
+      const limit = Math.max(0, S.limit0 + c.hp - S.hp0);
+      let left = limit, fresh = st.nU, kIn = 0, v = 0;
+      const k = [0, 0, 0, 0, 0, 0];
+      for (const [kv, a, j] of order) {
+        if (a >= 0 && j < n0[a] - st.n[a]) continue; // 已经用掉（便宜的先用）
+        while (fresh > 0 && left > 0 && wIn > kv) {
+          fresh--;
+          left--;
+          kIn++;
+        }
+        if (left <= 0) break;
+        v += kv;
+        left--;
+        if (a >= 0) k[a]++;
+      }
+      while (fresh > 0 && left > 0) {
+        fresh--;
+        left--;
+        kIn++;
+      }
+      let total = v + kIn * wIn + (st.nU - kIn) * wOut + X.nt(st.m, k, c.hp);
+      // 桃、酒在同一侧、另一侧还留着材料：濒死时能自救。按留牌层给保命酒的价算，乘下回合前进濒死的机会。
+      if (sideOf(st.m, TAO) === sideOf(st.m, JIU)) {
+        const o = 1 - sideOf(st.m, TAO);
+        let has = false;
+        for (let a = 0; a < 6; a++) if (sideOf(st.m, a) === o && k[a] > 0) has = true;
+        if (has) {
+          const dist = S.pois(S.lambda);
+          let pDie = 0;
+          for (let j = c.hp + k[SHAN]; j < dist.length; j++) pDie += dist[j];
+          total += (pDie * jiuUseful(1, k[TAO] + k[JIU])) / 5;
+        }
+      }
+      return total;
+    };
+  }
+  // 出牌阶段：迭代加深（最多 6 步、最多 2000 个局面），每一步考虑所有君侧转化（材料 × 出口 × 并法）、本体会出的真牌、停手。
+  function plan(S, opts = {}) {
+    const DEPTH = opts.depth ?? 6, BUDGET = opts.budget ?? 2000, CAP = opts.cap ?? 3;
+    const X = tables(S);
+    const mats = S.mats;
+    const n0 = mats.map(l => Math.min(l.length, CAP));
+    const terminal = makeTerminal(S, X, n0);
+    let nodes = 0, cut = false;
+    // 本体想出的真牌还没出完时不算停手（停了本体照样会出）。
+    const must = st => {
+      const c = st.c;
+      return (st.n[SHA] > 0 && c.sha > 0 && S.shaExec) || (st.n[TAO] > 0 && c.hp < S.maxHp) || (st.n[GH] > 0 && S.ghExec && c.g < S.G.length) || st.n[TS] > 0;
+    };
+    const children = st => {
+      const out = [], c = st.c;
+      if (st.n[SHA] > 0 && c.sha > 0 && S.shaExec) {
+        const n = st.n.slice();
+        n[SHA]--;
+        let c2 = c;
+        if (n[JIU] > 0 && !c.jiu && S.jiuGate) {
+          n[JIU]--;
+          c2 = applyUse(c2, JIU);
+        }
+        out.push({ kind: "real", a: SHA, v: S.shaV[c2.drunk ? 1 : 0], st: { m: st.m, n, nU: st.nU, c: applyUse(c2, SHA) } });
+      }
+      if (st.n[TAO] > 0 && c.hp < S.maxHp) {
+        const n = st.n.slice();
+        n[TAO]--;
+        out.push({ kind: "real", a: TAO, v: S.heal(c.hp), st: { m: st.m, n, nU: st.nU, c: applyUse(c, TAO) } });
+      }
+      if (st.n[GH] > 0 && S.ghExec && c.g < S.G.length) {
+        const n = st.n.slice();
+        n[GH]--;
+        out.push({ kind: "real", a: GH, v: S.G[c.g], st: { m: st.m, n, nU: st.nU, c: applyUse(c, GH) } });
+      }
+      if (st.n[TS] > 0) {
+        const n = st.n.slice();
+        n[TS]--;
+        const link = S.tsExec ? S.tsV : -1;
+        out.push(link >= S.recastV ? { kind: "real", a: TS, v: link, st: { m: st.m, n, nU: st.nU, c } } : { kind: "recast", a: TS, v: 0, st: { m: st.m, n, nU: st.nU + 1, c } });
+      }
+      for (let a = 0; a < 6; a++) {
+        if (!st.n[a]) continue;
+        for (const e of exitsTo(S, st.m, c, 1 - sideOf(st.m, a), st)) {
+          const n = st.n.slice();
+          n[a]--;
+          let c2 = c, nU = st.nU;
+          const val = e.use === "wz" ? 0 : X.vNow(c, e, 0);
+          if (e.use === "wz") nU += 2;
+          else c2 = applyUse(c, e.use);
+          for (const mv of moves(st.m, a, e.base)) out.push({ kind: "conv", a, e, mv, v: val, st: { m: mv.m, n, nU, c: c2 } });
+        }
+      }
+      return out;
+    };
+    const keyOf = st => {
+      let k = st.m;
+      for (let a = 0; a < 6; a++) k = k * 8 + st.n[a];
+      k = k * 32 + Math.min(st.nU, 31);
+      const c = st.c;
+      // 每格留足位置（装了连弩出杀次数记到 9，过河最多 4 张，体力到 31），不同局面不会撞号。
+      return ((((k * 16 + Math.min(c.sha, 15)) * 2 + (c.jiu ? 1 : 0)) * 2 + (c.drunk ? 1 : 0)) * 32 + Math.min(c.hp, 31)) * 8 + c.g;
+    };
+    const memo = new Map();
+    const best = (st, d) => {
+      const k = keyOf(st);
+      const hit = memo.get(k);
+      if (hit && hit.d >= d) return hit;
+      nodes++;
+      if (nodes > BUDGET) cut = true;
+      let res;
+      if (d === 0 || cut) {
+        // 看不到更远：本体想出的真牌按收益从高到低出完，再估值。
+        let s = st, acc = 0, guard = 0;
+        while (must(s) && guard++ < 12) {
+          const nat = children(s).filter(x => x.kind !== "conv");
+          if (!nat.length) break;
+          nat.sort((x, y) => y.v - x.v);
+          acc += nat[0].v;
+          s = nat[0].st;
+        }
+        res = { v: acc + terminal(s), step: null, d: 0 };
+      } else {
+        res = must(st) ? { v: -Infinity, step: null, d } : { v: terminal(st), step: { kind: "stop" }, d };
+        const alts = [];
+        for (const ch of children(st)) {
+          const v = ch.v + best(ch.st, d - 1).v;
+          alts.push([v, ch]);
+          if (v > res.v + 1e-9) res = { v, step: ch, d };
+        }
+        if (cut) res.d = 0;
+        res.alts = alts;
+      }
+      memo.set(k, res);
+      return res;
+    };
+    const root = opts.root ?? { m: S.mask0, n: n0.slice(), nU: 0, c: { sha: S.shaLeft0, jiu: S.jiuUsed0, hp: S.hp0, g: 0, drunk: S.drunk0 } };
+    let out = null;
+    for (let D = 1; D <= DEPTH; D++) {
+      const r = best(root, D);
+      if (cut && out) break;
+      const alts = (r.alts || []).slice().sort((x, y) => y[0] - x[0]);
+      let first = r.step;
+      // 差不多一样好时先摸牌（先看到更多牌再决定）。
+      const draw = alts.find(([v, ch]) => v >= r.v - 0.02 && ch.kind === "conv" && ch.e.use === "wz");
+      if (draw && !(first && first.kind === "conv" && first.e.use === "wz")) first = draw[1];
+      // 花掉一张实体牌，要比停手多赚 0.1 张以上（估值的精度）才动手。
+      if (!must(root) && first && first.kind === "conv" && r.v < terminal(root) + (opts.margin ?? 0.1)) first = { kind: "stop" };
+      out = { v: r.v, first, depthDone: D, alts, pv: [] };
+      let st = root, guard = 0, step0 = first;
+      while (guard++ < 12) {
+        const e = step0 ? { step: step0 } : memo.get(keyOf(st));
+        step0 = null;
+        if (!e?.step || e.step.kind === "stop") break;
+        out.pv.push({ step: e.step, before: st });
+        st = e.step.st;
+      }
+      if (cut) break;
+    }
+    return { ...out, root, n0, nodes, cut, stopV: terminal(root) };
+  }
+  // 自己濒死（回合外）：君侧救（桃、酒同侧时，另一侧每种材料 × 当桃/当酒 × 并法）和真桃、真酒，按救回来以后的局面比。
+  function dying(S) {
+    const X = tables(S);
+    const n0 = S.mats.map(l => l.length);
+    // 回合外：到下回合摸牌、出牌之前不会弃牌，手牌上限不卡。
+    const terminal = makeTerminal({ ...S, limit0: 99 }, X, n0);
+    const m = S.mask0, c = { sha: 0, jiu: true, hp: 1, g: 0, drunk: false };
+    const res = [];
+    if (sideOf(m, TAO) === sideOf(m, JIU)) {
+      const o = 1 - sideOf(m, TAO);
+      for (let a = 0; a < 6; a++) {
+        if (sideOf(m, a) !== o || !n0[a]) continue;
+        for (const base of [TAO, JIU]) {
+          for (const mv of moves(m, a, base)) {
+            const n = n0.slice();
+            n[a]--;
+            res.push({ kind: "conv", a, base, mv, v: terminal({ m: mv.m, n, nU: 0, c }) });
+          }
+        }
+      }
+    }
+    for (const a of [TAO, JIU]) {
+      if (!n0[a]) continue;
+      const n = n0.slice();
+      n[a]--;
+      res.push({ kind: "real", a, v: terminal({ m, n, nU: 0, c }) });
+    }
+    return res.sort((x, y) => y.v - x.v);
+  }
+
+  const A = {
+    N, norm, sideOf, moves, exitsTo, plan, dying, poisson,
+    // ---- 引擎 → 规划用的局面（每次决定算一次，缓存在这次 chooseToUse 上）----
+    snapshot(player, event, extra = {}) {
+      const skill = lib.skill.xd_junce, core = lib.skill.xd_ai_core, keep = lib.skill.xd_ai_keep, goude = lib.skill.xd_ai_goude;
+      const exclude = extra.exclude || [];
+      const side = core.sideMap(player);
+      const sha = { name: "sha", isCard: true };
+      // 杀：此刻打得到的人里最值的一下（不喝酒 / 喝了酒两点伤害）。
+      let shaPlain = 0, shaDrunk = 0;
+      for (const target of game.filterPlayer(current => current !== player)) {
+        let ok = false;
+        try {
+          ok = player.canUse(sha, target);
+        } catch (e) {}
+        if (!ok) continue;
+        const v = goude.shaValue(player, target, side);
+        if (!(v > 0)) continue;
+        shaPlain = Math.max(shaPlain, v);
+        const w = side.get(target) ?? 0, h = core.hpOf(target);
+        let drunk = v;
+        if (!core.maixie(player, target) && core.immune(player, target, sha) === null) {
+          const r = core.respondChance(player, target, "shan", sha);
+          const hit = h >= 3 ? core.hpCost(h) + core.hpCost(h - 1) : w < 0 ? core.killDyingCost(player, target, false) : core.dyingCost(player, target, false);
+          drunk = Math.max(v, -w * ((1 - r) * hit + r * core.respondCard));
+        }
+        shaDrunk = Math.max(shaDrunk, drunk);
+      }
+      // 过河：拆得到的人，一人一张或两张，按拆的价从高到低（第几张过河值多少）。
+      const G = [];
+      for (const target of game.filterPlayer(current => current !== player)) {
+        let n = 0;
+        try {
+          n = target.countDiscardableCards(player, "hej");
+        } catch (e) {}
+        if (!n) continue;
+        const v = goude.chaiValue(player, target, side);
+        if (!(v > 0)) continue;
+        G.push(v);
+        if (n >= 2) G.push(v);
+      }
+      G.sort((a, b) => b - a);
+      G.length = Math.min(G.length, 4);
+      // 敌人拿无懈挡她的无中的机会 b：玩家操作的敌人看有没有无懈；电脑只在她只剩一张手牌时才挡（本体无中的无懈 AI）。
+      const handAfter = player.countCards("h") - 1;
+      let pass = 1;
+      const pw = core.pileShare("wuxie");
+      for (const target of game.filterPlayer(current => current !== player && (side.get(current) ?? 0) < -0.3)) {
+        const willing = core.humanActing(target) ? 1 : handAfter <= 1 ? 1 : 0;
+        if (!willing) continue;
+        pass *= 1 - (1 - Math.pow(1 - pw, target.countCards("h")));
+      }
+      const block = 1 - pass;
+      // 材料（手牌和木牛上的六种牌）与其他手牌，按留牌层的价。
+      const hand = player.getCards("hs").filter(card => !exclude.includes(card));
+      const threat = keep.threat(player);
+      const kvMap = keep.values(player, hand, "use", threat);
+      const kv = card => {
+        const v = kvMap.get(card);
+        return typeof v === "number" && Number.isFinite(v) ? v : 0.6;
+      };
+      const matCards = N.map(name => skill.getMaterialCards(player, [name]).filter(card => !exclude.includes(card)).sort((a, b) => kv(a) - kv(b)));
+      const otherKept = player.getCards("h").filter(card => !exclude.includes(card) && !N.includes(get.name(card, player))).map(kv);
+      // 多摸到一张某种牌，留着值多少（加一张虚拟牌进去看它的价）。
+      const kvFresh = N.map(name => {
+        const virt = { name, isCard: true };
+        try {
+          const v = keep.values(player, hand.concat([virt]), "use", threat).get(virt);
+          return typeof v === "number" && Number.isFinite(v) ? v : 0.6;
+        } catch (e) {
+          return 0.6;
+        }
+      });
+      const p = N.map(name => core.pileShare(name));
+      const shaLeft = Number(player.getCardUsable("sha"));
+      const attackNext = keep.attack(player);
+      const S = {
+        mask0: skill.getMask(player),
+        hp0: Math.max(1, player.hp),
+        maxHp: player.maxHp,
+        limit0: player.getHandcardLimit(),
+        shaLeft0: Math.max(0, Math.min(9, Number.isFinite(shaLeft) ? shaLeft : 9)),
+        jiuUsed0: !(player.getCardUsable("jiu") > 0),
+        drunk0: player.hasSkill("jiu"),
+        shaRule: skill.isUsableName("sha", event, player),
+        shaExec: shaPlain > 0,
+        ghRule: skill.isUsableName("guohe", event, player),
+        ghExec: G.length > 0,
+        tsExec: false,
+        tsV: 0,
+        jiuGate: true,
+        recastV: 1,
+        G,
+        shaV: [shaPlain, shaDrunk],
+        heal: h => core.healValue(h),
+        block,
+        wz: 2 * (1 - block),
+        wzNext: 2 * (1 - block),
+        attackNext,
+        // 下回合喝酒杀：按这回合同一批目标里喝酒和不喝酒的比例放大（没有可打的目标时就不放大）。
+        attackNextDrunk: shaPlain > 0 ? (attackNext * shaDrunk) / shaPlain : attackNext,
+        ghNext: 1,
+        shaNextUses: 1,
+        pShaNext: 1 - Math.pow(1 - p[SHA], 2),
+        p,
+        pOther: Math.max(0, 1 - p.reduce((s, x) => s + x, 0)),
+        kvFresh,
+        unseenKeep: 0.6,
+        otherKept,
+        lambda: Math.max(0, Number(threat?.shan) || 0),
+        mats: matCards.map(list => list.map(kv)),
+        cards: matCards
+      };
+      const cache = new Map();
+      S.pois = l => {
+        if (!cache.has(l)) cache.set(l, poisson(l, 10));
+        return cache.get(l);
+      };
+      return S;
+    },
+    stateKey(player, event) {
+      return [
+        lib.skill.xd_junce.getMask(player),
+        player.getCards("hs").map(card => card.cardid).join(),
+        player.hp,
+        player.maxHp,
+        player.getCardUsable("sha"),
+        player.getCardUsable("jiu"),
+        +player.hasSkill("jiu"),
+        game.players.map(current => current.playerid + ":" + current.hp + ":" + current.countCards("hej")).join()
+      ].join("|");
+    },
+    // 一次 chooseToUse 只算一次（局面变了才重算）。
+    aiPlan(player, event) {
+      const key = A.stateKey(player, event);
+      if (event._xd_junce_plan?.key === key) return event._xd_junce_plan;
+      const box = { key, S: null, plan: null };
+      event._xd_junce_plan = box;
+      try {
+        box.S = A.snapshot(player, event);
+        box.plan = A.plan(box.S, { depth: 6, budget: 2000 });
+      } catch (e) {
+        box.plan = null;
+      }
+      return box;
+    },
+    // 规划里的一步 → 钩子要的：当什么牌、用哪张材料、底下是哪个牌名、往哪边并。
+    stepInfo(S, n0, item) {
+      const s = item.step;
+      const idx = n0[s.a] - item.before.n[s.a];
+      return {
+        useName: s.e.use === "wz" ? "wuzhong" : N[s.e.use],
+        material: N[s.a],
+        base: N[s.e.base],
+        merge: s.mv.key,
+        mask: s.mv.m,
+        cardId: S.cards[s.a][idx]?.cardid
+      };
+    },
+    // 出牌阶段的 order：第一步是君侧 → 30（手里有能用的真无中时 6.9，让真无中先摸）；第一步是真牌 → 0.1（本体先出真牌，
+    // 它不出时再轮到君侧，按计划里下一步君侧做）；停手 → 0。
+    phaseOrder(player, event) {
+      const box = A.aiPlan(player, event), plan = box.plan;
+      if (!plan?.first || plan.first.kind === "stop") return 0;
+      const item = plan.first.kind === "conv" ? plan.pv[0] : plan.pv.find(x => x.step.kind === "conv");
+      if (!item || item.step.kind !== "conv") return 0;
+      const step = A.stepInfo(box.S, plan.n0, item);
+      if (!step.cardId || !lib.skill.xd_junce.getUseNames(event, player).includes(step.useName)) return 0;
+      player._xd_junce_aiPlan = { key: step.useName };
+      player._xd_junce_aiStep = step;
+      if (plan.first.kind !== "conv") return 0.1;
+      const realDraw = player.getCards("hs", card => get.name(card, player) === "wuzhong").some(card => {
+        try {
+          return lib.filter.cardEnabled(card, player) && player.hasUseTarget(card);
+        } catch (e) {
+          return false;
+        }
+      });
+      return realDraw ? 6.9 : 30;
+    },
+    // 自己濒死：君侧救比真桃/真酒好 0.1 张以上（或手里没有真的）才用君侧，返回 1.5（真牌是 1）；否则 0.5，真牌先出。
+    dyingOrder(player, event) {
+      delete player._xd_junce_dyingStep;
+      if (event.dying !== player) return 0;
+      let S, list;
+      try {
+        S = A.snapshot(player, event);
+        list = A.dying(S);
+      } catch (e) {
+        return 0.5;
+      }
+      const conv = list.find(x => x.kind === "conv"), real = list.find(x => x.kind === "real");
+      if (!conv) return 0.5;
+      if (real && conv.v < real.v + 0.1) return 0.5;
+      const card = S.cards[conv.a][0];
+      if (!card) return 0.5;
+      player._xd_junce_dyingStep = { useName: N[conv.base], material: N[conv.a], base: N[conv.base], merge: conv.mv.key, mask: conv.mv.m, cardId: card.cardid };
+      return 1.5;
+    },
+    // 用君侧的牌真的出去后选并法：和计划一致就照计划；不一致（本体换了牌）就按每种并法往下重算一遍挑最值的。
+    pickMerge(player, choices, pair, trigger) {
+      const step = player._xd_junce_aiStep || player._xd_junce_dyingStep;
+      if (step && step.material === pair.sourceName && step.base === pair.targetBase) {
+        const i = choices.findIndex(item => item.key === step.merge);
+        if (i >= 0) return i;
+      }
+      try {
+        const event = lib.skill.xd_junce.getChooseToUseEvent();
+        if (!event || event.type !== "phase") return -1;
+        const S = A.snapshot(player, event, { exclude: trigger?.cards || [] });
+        const use = N.indexOf(get.name(trigger?.card, player));
+        let c = { sha: S.shaLeft0, jiu: S.jiuUsed0, hp: S.hp0, g: 0, drunk: S.drunk0 }, nU = 0;
+        if (get.name(trigger?.card, player) === "wuzhong") nU = 2;
+        else if (use >= 0) c = applyUse(c, use);
+        const n0 = S.mats.map(l => Math.min(l.length, 3));
+        let bestI = -1, bestV = -Infinity;
+        choices.forEach((item, i) => {
+          const r = A.plan(Object.assign({}, S, { mask0: item.mask }), { depth: 4, budget: 600, root: { m: item.mask, n: n0.slice(), nU, c } });
+          if (r.v > bestV) {
+            bestV = r.v;
+            bestI = i;
+          }
+        });
+        return bestI;
+      } catch (e) {
+        return -1;
+      }
+    }
+  };
+  return A;
+}
+
 
 
 // 玄蝶当前帖子版的8名旧将：直接复用本体未改动技能，只覆盖人物规格与发生变化的技能。
@@ -15962,6 +16600,8 @@ function createXdLegacyPack() {
       }
     };
     game.addGlobalSkill("xd_buping_ai");
+    // 吕雉【君侧】的出牌规划（见 createXdJunceAi）。
+    lib.skill.xd_junce_ai = createXdJunceAi();
     // 记下每名角色出牌阶段结束时手里的牌（你 11-02 12:48，谢安记牌用）：熬过出牌阶段的牌，电脑多半是留着不用的闪、桃、无懈、杀。
     lib.skill.xd_buping_memo = {
       charlotte: true,
@@ -34734,6 +35374,9 @@ export default function () {
                 const player = get.player();
                 const name = button?.link?.[2];
                 const card = { name, isCard: true };
+                // 电脑自己濒死时算好的君侧自救（xd_junce_ai.dyingOrder）：只选算好的那个牌名。
+                const dp = player?._xd_junce_dyingStep;
+                if (dp && name && lib.skill.xd_junce.getChooseToUseEvent()?.type === "dying") return name === dp.useName ? 10 : 1;
                 return name ? lib.skill.xd_print_ai.pick(player, '_xd_junce_aiPlan', name, () => player.getUseValue(card), card) : 0;
               },
               backup(links, backupPlayer) {
@@ -34770,6 +35413,13 @@ export default function () {
                     return !!lib.skill.xd_junce.getPairFromSnapshot(player, card, snap, true);
                   },
                   ai1(card) {
+                    // 电脑按规划选材料：算好的那张最先，其次同名的；没有规划时照原来的挑法。
+                    const p = get.player();
+                    const step = p?._xd_junce_aiStep || p?._xd_junce_dyingStep;
+                    if (step && step.useName === viewAs.name) {
+                      if (card.cardid === step.cardId) return 20;
+                      if (get.name(card, p) === step.material) return 15 - get.value(card, p) / 100;
+                    }
                     return lib.skill.xd_junce_backup.check(card);
                   },
                   check(card) {
@@ -34895,6 +35545,9 @@ export default function () {
                       .set("ai", function () {
                         const choices = get.event().xd_junce_choices || [];
                         if (choices.length < 2) return 0;
+                        // 电脑：和规划一致就照规划的并法；本体换了牌就按每种并法往下重算（xd_junce_ai.pickMerge）。
+                        const picked = lib.skill.xd_junce_ai?.pickMerge?.(get.player(), choices, pair, trigger);
+                        if (typeof picked === "number" && picked >= 0 && picked < choices.length) return picked;
                         const score = item => {
                           const sides = lib.skill.xd_junce.getSides(get.player(), item.mask);
                           return -Math.abs(sides[0].length - sides[1].length);
@@ -34907,6 +35560,8 @@ export default function () {
                     chosen = choices[index] || choices[0];
                   }
 
+                  delete player._xd_junce_aiStep;
+                  delete player._xd_junce_dyingStep;
                   const before = skill.formatState(player);
                   skill.setMask(player, chosen.mask);
                   const after = skill.formatState(player);
@@ -34921,11 +35576,21 @@ export default function () {
               // 代价 = 另一侧最便宜的那张材料牌本身的用处（材料是真牌，会花掉）。
               // 回合外照旧（排在同名真牌后面一点点），但濒死不救敌人、手里有同名真牌就先出真牌。
               order(item, player) {
+                // 濒死求救时本体不带参数调用 order()（_save 的 ai1）：自己找出牌的人，不然这里会报错。
+                player = player || get.player?.() || _status.event?.player;
+                if (!player || typeof player.hasSkill !== "function") return 0;
                 const skill = lib.skill.xd_junce, print = lib.skill.xd_print_ai;
                 const event = skill.getChooseToUseEvent();
                 delete player._xd_junce_aiPlan;
+                delete player._xd_junce_aiStep;
+                delete player._xd_junce_dyingStep;
                 const names = skill.getUseNames(event, player);
                 if (!names.length) return 1;
+                // 电脑（含托管）：出牌阶段按规划（xd_junce_ai.phaseOrder），自己濒死时比君侧自救和真桃、真酒（dyingOrder）。
+                if (!lib.skill.xd_ai_core.humanActing(player)) {
+                  if (event?.type === "phase" && event.player === player) return lib.skill.xd_junce_ai.phaseOrder(player, event);
+                  if (event?.type === "dying") return lib.skill.xd_junce_ai.dyingOrder(player, event);
+                }
                 if (event?.type !== "phase") {
                   if (event && !print.offTurnOk(player, event, names)) return 0;
                   return Math.max(...names.map(name => get.order({ name, isCard: true }) || 1)) + 0.05;
@@ -34944,15 +35609,17 @@ export default function () {
                 if (!player.isUnderControl(true) || _status.auto) player._xd_junce_aiPlan = plan;
                 return plan ? plan.order + 0.1 : 0;
               },
-              respondSha: true,
-              respondShan: true,
+              // 回合外君侧只有一种用法：自己濒死、桃和酒在同一侧、另一侧有材料，当桃或酒救自己。
+              // 被要求出闪、出杀、出无懈或救别人时都没有选项，所以不报 respondSha / respondShan。
+              // （原来按“当前询问”判断，濒死询问开始前查不到，本体会以为她救不了自己、不问她。）
               save: true,
-              skillTagFilter(player, tag) {
-                const event = lib.skill.xd_junce.getChooseToUseEvent();
-                const names = lib.skill.xd_junce.getUseNames(event, player);
-                if (tag === "respondSha") return names.includes("sha");
-                if (tag === "respondShan") return names.includes("shan");
-                if (tag === "save") return names.includes("tao") || names.includes("jiu");
+              skillTagFilter(player, tag, arg) {
+                if (tag !== "save") return false;
+                if (arg && arg !== player) return false;
+                const skill = lib.skill.xd_junce, mask = skill.getMask(player);
+                const side = skill.getSideIndex(player, "tao", mask);
+                if (side < 0 || side !== skill.getSideIndex(player, "jiu", mask)) return false;
+                return skill.getMaterialCards(player, skill.getSides(player, mask)[1 - side]).length > 0;
               }
             }
           },
