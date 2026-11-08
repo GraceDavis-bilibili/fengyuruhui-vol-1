@@ -10078,10 +10078,14 @@ function createXdXunshuAi() {
       ].join("|");
       if (evt._xd_xunshu?.key === key) return evt._xd_xunshu.plan;
       let plan = null;
+      // 算的时候（看杀、装备有没有值得用的目标）不再进这个钩子。
+      A._busy++;
       try {
         plan = A.baPlan(player, evt);
       } catch (e) {
         plan = null;
+      } finally {
+        A._busy--;
       }
       evt._xd_xunshu = { key, plan };
       return plan;
