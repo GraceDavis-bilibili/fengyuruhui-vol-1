@@ -13539,10 +13539,10 @@ function createXdLegacyPack() {
       },
       // 自己有整回合出牌规划的技能：下面这些通用规则不替它做主——
       // aoe 什么时候放南蛮万箭（xd_ai_aoe）、trap 打卖血的敌人（xd_ai_trap）、friendhit 打队友（xd_ai_friendhit）、
-      // keep 弃牌时留什么（xd_ai_keep）、wuxie 保自己人的牌的无懈（xd_ai_wuxie）。
+      // keep 弃牌时留什么（xd_ai_keep）、wuxie 保自己人的牌的无懈（xd_ai_wuxie）、gear 武器和 −1 马什么时候装（xd_ai_gear）。
       // 老将登记在这里（原来是五份名单，内容不变）。以后的新将不用改这里：在自己的技能上写 xdAi: { own: ["aoe", ...] } 就行。
       ownPlans: {
-        xd_shenji: ["aoe", "trap", "friendhit", "keep", "wuxie"], // 韩信【神机】
+        xd_shenji: ["aoe", "trap", "friendhit", "keep", "wuxie", "gear"], // 韩信【神机】
         xd_youren: ["aoe", "trap", "friendhit", "keep"], // 陈平【游刃】
         xd_yuanyuan: ["aoe", "trap", "friendhit", "keep"], // 伍员【冤冤】
         xd_juemo: ["aoe", "trap", "friendhit", "keep"], // 卫青霍去病【绝漠】
@@ -16091,23 +16091,30 @@ function createXdLegacyPack() {
       },
       // 下回合拿一张杀去打最好打的敌人值几张牌（谁都够不着时按 0.2 算；卖血将、打不动的不算）。
       attack(player) {
-        const core = lib.skill.xd_ai_core, weights = core.weights(player), card = { name: "sha", isCard: true };
+        const skill = lib.skill.xd_ai_keep, weights = lib.skill.xd_ai_core.weights(player), card = { name: "sha", isCard: true };
         let best = 0;
         for (const target of game.filterPlayer(current => current !== player)) {
-          const w = weights.get(target) || 0;
-          if (w >= -0.3) continue;
+          if ((weights.get(target) || 0) >= -0.3) continue;
           let ok = true;
           try {
             ok = player.canUse(card, target, true);
           } catch (e) {}
           if (!ok) continue;
-          const h = core.hpOf(target);
-          if (core.maixie(player, target) && h >= 2) continue;
-          if (core.immune(player, target, card) !== null) continue;
-          const r = core.respondChance(player, target, "shan", card);
-          best = Math.max(best, -w * (1 - r) * (h >= 2 ? core.hpCost(h) : core.killDyingCost(player, target, false)));
+          best = Math.max(best, skill.hitValue(player, target, weights));
         }
         return best || 0.2;
+      },
+      // 一张杀打中 target 我们赚几张：只算敌人；卖血将 2 血以上、打不动的（藤甲、仁王盾这类）0。
+      // 装备规则（xd_ai_gear）挑“最该打的敌人”也用它。
+      hitValue(player, target, weights) {
+        const core = lib.skill.xd_ai_core, card = { name: "sha", isCard: true };
+        const w = (weights || core.weights(player)).get(target) || 0;
+        if (w >= -0.3) return 0;
+        const h = core.hpOf(target);
+        if (core.maixie(player, target) && h >= 2) return 0;
+        if (core.immune(player, target, card) !== null) return 0;
+        const r = core.respondChance(player, target, "shan", card);
+        return -w * (1 - r) * (h >= 2 ? core.hpCost(h) : core.killDyingCost(player, target, false));
       },
       // 卓文君（和一心伴侣）每轮有一次相赴闪：按找得到相差 1 张的人的机会，算作手里已经有 extra 张闪（你 11-05 确认）。
       shanValues(player, n, threat) {
@@ -16204,6 +16211,35 @@ function createXdLegacyPack() {
         } else if (style.sha) extra += skill.syn;
         return keep + extra * Math.min(1, keep / skill.base);
       },
+      // 进攻锦囊（你 11-08 17:03）：“顺和其他的进攻牌都要得到类似南蛮入侵和万箭齐发的待遇，实在不能出的时候，
+      // 弃牌要为这些好牌留格子，除非情况危急，必须全部留防御牌。”和攒南蛮万箭同一个价（aoeKeep）：
+      // 现在用不出去 ≈ 0.75 张；现在就有好目标的，按“现在用赚几张”（xd_ai_core.wish）往上加，最多 1.15 张；
+      // 好几张时第二张起 ×0.9。所以第二、三张杀（只能出一次杀，≈ 0.1～0.3 张）、用不上的第二张闪都排在它后面。
+      // 情况危急时不用另算：闪按挨打的机会算（被集火、血少时第二、三张闪都很贵），桃在受伤时本体就给 7 分以上（1.4 张），
+      // 都排在进攻锦囊前面。火攻平常 ≈ 0（总纲⑰），现在用得赚（藤甲、连着的敌人）才这样算，否则照本体。
+      attackNames: ["shunshou", "guohe", "juedou", "jiedao", "lebu", "bingliang", "tiesuo", "huogong"],
+      attackValues(player, cards) {
+        const skill = lib.skill.xd_ai_keep, core = lib.skill.xd_ai_core, out = new Map();
+        const list = cards.filter(item => skill.attackNames.includes(get.name(item, player)));
+        if (!list.length) return out;
+        let X;
+        try {
+          X = core.wishCtx(player);
+        } catch (e) {}
+        list
+          .map(item => {
+            let v = 0;
+            try {
+              v = core.wish(player, item, X).v || 0;
+            } catch (e) {}
+            if (get.name(item, player) === "huogong" && !(v > 0)) return null;
+            return [item, skill.aoeKeep(Math.max(0, v))];
+          })
+          .filter(Boolean)
+          .sort((a, b) => b[1] - a[1])
+          .forEach(([item, value], i) => out.set(item, skill.soft(value * Math.pow(0.9, i))));
+        return out;
+      },
       // 压到 1.48 张（本体分 7.4）以内，不越过留桃的线；1.2 张以下不变。
       soft(x) {
         return x <= 1.2 ? x : 1.2 + 0.28 * (1 - Math.exp(-(x - 1.2) / 0.5));
@@ -16223,6 +16259,8 @@ function createXdLegacyPack() {
           .map(item => [item, skill.aoeValue(player, item, threat, style, phase)])
           .sort((a, b) => b[1] - a[1])
           .forEach(([item, value], i) => out.set(item, skill.soft(value * Math.pow(0.9, i))));
+        // 弃牌时进攻锦囊也留格子（你 11-08 17:03）。
+        if (phase === "discard") for (const [item, value] of skill.attackValues(player, cards)) out.set(item, value);
         if (phase !== "discard") {
           for (const item of cards) {
             if (out.has(item)) continue;
@@ -16317,16 +16355,18 @@ function createXdLegacyPack() {
         const skill = lib.skill.xd_ai_keep;
         if (evt._xd_ai_keep !== undefined) return evt._xd_ai_keep;
         let plan = null;
-        if (!lib.skill.xd_ai_core.ownsPlan(player, "keep")) {
-          skill._busy = (skill._busy || 0) + 1;
-          try {
-            plan = new Map();
-            for (const [card, value] of skill.values(player, player.getCards("h"), "discard")) plan.set(card, 5 * value);
-          } catch (e) {
-            plan = null;
-          } finally {
-            skill._busy--;
-          }
+        // 有自己弃牌规划的将（韩信等，core.ownPlans 的 keep）：闪、杀、南蛮、万箭照他们自己的，
+        // 进攻锦囊照样留格子（你 11-08 17:03 说的是所有电脑）；他们自己的估值排在后面，照样能改（如内奸韩信先弃只够得到弱势一方的顺、拆）。
+        const own = lib.skill.xd_ai_core.ownsPlan(player, "keep");
+        skill._busy = (skill._busy || 0) + 1;
+        try {
+          plan = new Map();
+          const hand = player.getCards("h");
+          for (const [card, value] of own ? skill.attackValues(player, hand) : skill.values(player, hand, "discard")) plan.set(card, 5 * value);
+        } catch (e) {
+          plan = null;
+        } finally {
+          skill._busy--;
         }
         evt._xd_ai_keep = plan;
         return plan;
@@ -16348,6 +16388,130 @@ function createXdLegacyPack() {
       }
     };
     game.addGlobalSkill("xd_ai_keep");
+    // 武器、−1 马什么时候装（所有电脑；你 11-08 16:53、17:07、17:10）：
+    // “韩信不打算用诸葛连弩取得击杀，那就不要在能藏在手里的时候立刻装上。很多武将都能抢装备区里的牌，过河拆桥也是本来不一定能
+    //  准确拆掉这张关键牌的，现在拿出来放到装备区里，所有人都能看见了，也就能轻易破坏了”；
+    // “装不装取决于当时能不能够到最适合揍的敌人，装上刚好够到，那就装，如果真的特别能存牌，那就不多装”。
+    // 1. 回合末留在手里也不用弃（手牌数连这张 ≤ 手牌上限）：先不装，混在手牌里，拆、顺只能盲抽。
+    // 2. 这回合用得上才装：装上刚好够到最该打的敌人（装上以后够得着的敌人里最好打的那个，比现在够得着的都好打）；
+    //    诸葛连弩这类加出杀次数的，这回合要连出两张以上的杀才装；−1 马让手里的顺手牵羊够到差一步、身上有牌的敌人也装。
+    // 3. 手牌放不下（回合末要弃）：照常装（装上去不占手牌上限），但排在这回合别的牌后面，出完别的牌放得下了就不装。
+    // 4. 装上装备才赚的将（孙尚香【枭姬】、凌统【旋风】这类，本体标了 reverseEquip / noe）照常装；防具、+1 马、宝物不归这里管。
+    // 有自己整回合规划的将在 core.ownPlans 登记 "gear"，自己调 decide（韩信【神机】按他自己的出杀规矩算 shas）。
+    lib.skill.xd_ai_gear = {
+      charlotte: true,
+      silent: true,
+      popup: false,
+      priority: -1,
+      margin: 0.1,
+      lastOrder: 0.5,
+      exempt(player) {
+        try {
+          return !!(player.hasSkillTag("reverseEquip") || player.hasSkillTag("noe"));
+        } catch (e) {
+          return false;
+        }
+      },
+      // 这回合打算出几张普通的【杀】：手里的杀（技能当杀用的至少算一张）。
+      shaPlan(player) {
+        let n = 0;
+        try {
+          n = player.countCards("hs", item => get.name(item, player) === "sha");
+          if (!n && player.hasSha()) n = 1;
+        } catch (e) {}
+        return n;
+      },
+      // 加出杀次数的武器（诸葛连弩这类）。
+      volley(card) {
+        try {
+          return typeof get.info(card, false)?.mod?.cardUsable === "function";
+        } catch (e) {
+          return false;
+        }
+      },
+      // 装上 card 以后够不够得着 target：−1 马按距离减一；武器按换上以后的攻击范围（顶掉身上那把）。
+      reachWith(player, target, card) {
+        const sub = get.subtype(card, false);
+        let distance, range;
+        try {
+          distance = get.distance(player, target);
+          range = player.getAttackRange();
+        } catch (e) {
+          return false;
+        }
+        if (sub === "equip4") return distance - 1 <= range;
+        if (sub !== "equip1") return false;
+        try {
+          const others = player.getCards("e", item => get.subtype(item, false) !== "equip1");
+          range += player.getEquipRange(others.concat([card])) - player.getEquipRange();
+        } catch (e) {}
+        return distance <= range;
+      },
+      // 这回合用不用得上它（见上面第 2 条）。shas：这回合打算出几张普通的杀。
+      needNow(event, player, card, shas) {
+        const skill = lib.skill.xd_ai_gear, keep = lib.skill.xd_ai_keep, core = lib.skill.xd_ai_core;
+        const sub = get.subtype(card, false), weights = core.weights(player);
+        const foes = game.filterPlayer(target => target !== player && (weights.get(target) || 0) < -0.3);
+        if (!foes.length) return false;
+        if (sub === "equip4") {
+          // 身上已经有一匹 −1 马：再装一匹不多减距离。
+          if (player.countCards("e", item => get.subtype(item, false) === "equip4")) return false;
+          // 手里的顺手牵羊差一步够到身上有牌的敌人。
+          if (player.countCards("hs", item => get.name(item, player) === "shunshou") &&
+              foes.some(target => get.distance(player, target) === 2 && target.countCards("hej") > 0)) return true;
+        }
+        let uses = 0;
+        try {
+          uses = player.getCardUsable("sha");
+        } catch (e) {}
+        if (!(shas > 0) || !(uses > 0)) return false;
+        const sha = { name: "sha", isCard: true };
+        let now = 0, later = 0;
+        for (const target of foes) {
+          let legal = false, inNow = false;
+          try {
+            legal = player.canUse(sha, target, false);
+            inNow = legal && player.canUse(sha, target, true);
+          } catch (e) {}
+          if (!legal) continue;
+          const v = keep.hitValue(player, target, weights);
+          if (inNow) now = Math.max(now, v);
+          if (skill.reachWith(player, target, card)) later = Math.max(later, v);
+        }
+        // 诸葛连弩：这回合要连出两张以上的杀（剩下的次数不够），装上就能都打出去。
+        if (sub === "equip1" && skill.volley(card) && shas >= 2 && uses < shas && later > 0) return true;
+        // 装上刚好够到最该打的敌人。
+        return later > now + skill.margin;
+      },
+      // 手里这件武器 / −1 马现在装不装：null＝不归这里管，"now"＝现在装，"last"＝手牌放不下、出完别的牌再装，"hold"＝先不装。
+      decide(event, player, card, shas) {
+        const skill = lib.skill.xd_ai_gear;
+        if (get.itemtype(card) !== "card") return null;
+        const sub = get.subtype(card, false);
+        if (sub !== "equip1" && sub !== "equip4") return null;
+        if (get.position(card) !== "h" || skill.exempt(player)) return null;
+        if (skill.needNow(event, player, card, shas ?? skill.shaPlan(player))) return "now";
+        return player.countCards("h") <= player.getHandcardLimit() ? "hold" : "last";
+      },
+      mod: {
+        aiOrder(player, card, num) {
+          if (typeof num !== "number" || !(num > 0)) return;
+          const evt = _status.event;
+          if (evt?.name !== "chooseToUse" || evt.type !== "phase" || evt.player !== player) return;
+          const skill = lib.skill.xd_ai_gear, core = lib.skill.xd_ai_core;
+          let how = null;
+          try {
+            if (core.humanActing(player) || core.ownsPlan(player, "gear")) return;
+            how = skill.decide(evt, player, card);
+          } catch (e) {
+            return;
+          }
+          if (how === "hold") return 0;
+          if (how === "last") return Math.min(num, skill.lastOrder);
+        }
+      }
+    };
+    game.addGlobalSkill("xd_ai_gear");
     // AI（卓文君【相赴】【一心】；你 11-05 05:35 确认整套：“就是这样的！这游戏就是这样玩的！”，05:33 一心选“开局就认得队友才守”）。
     // 一次相赴的价值＝印出来的那张牌＋调手牌带来的卡差（＋一心的影响），单位都是“张”（总纲）：
     // 1. 找谁：手牌比她多的敌人（他弃最不要的一张、她摸一张，+1～+2）＞队友（弃的若是“多”出来的牌＝废牌换新牌）
@@ -17883,10 +18047,13 @@ function createXdLegacyPack() {
         if (get.itemtype(card) !== "card") return base;
         const type = get.type(card, null, false);
         if (type !== "basic" && type !== "trick") {
-          // 你 11-08 16:53：手牌上限比手牌多出不少时，武器、−1 马先留在手里（holdGear）。
-          if (skill.holdGear(event, player, card)) return 0;
+          // 武器、−1 马能藏在手里就先不装（你 11-08 16:53、17:07、17:10；通用规则 xd_ai_gear，韩信按自己的出杀规矩算 shas）。
+          // 手牌放不下时排到最后再装；古锭刀、寒冰剑互换照旧看敌人里有没有卖血的（换了更差就不装）。
+          const gear = lib.skill.xd_ai_gear?.decide?.(event, player, card, skill.gearShas(event, player));
+          if (gear === "hold") return 0;
           const swap = skill.weaponSwap(player, card);
-          if (swap) return swap > 0 ? Math.max(base, 1) + 200 : 0;
+          if (swap) return swap > 0 ? (gear === "last" ? lib.skill.xd_ai_gear.lastOrder : Math.max(base, 1) + 200) : 0;
+          if (gear === "last") return base > 0 ? Math.min(base, lib.skill.xd_ai_gear.lastOrder) : base;
           // 第九条：内奸的乐、兵粮有值半张以上的目标才贴，没有就留着（弃牌时先弃）。
           const delay = get.name(card, player);
           if (type === "delay" && (delay === "lebu" || delay === "bingliang") && skill.isNei(player)) {
@@ -17916,33 +18083,17 @@ function createXdLegacyPack() {
       selfUse(card, player) {
         return ["jiu", "tao", "wuzhong"].includes(get.name(card, player));
       },
-      // 武器、−1 马先不装（你 11-08 16:53）：手牌上限比手牌多出不少（例：5 血 3 张）时，韩信本来就要大量的牌，
-      // 留在手里能把应对局面的牌藏在用不上的牌中间（当主公时反贼的拆、顺都冲他来），赌自己不被乐；
-      // 这一回合有进攻的机会、用得上它时再装（attackSoon）。手牌快到上限时照常装（装上去不占手牌上限）。
-      holdGear(event, player, card) {
-        const sub = get.subtype(card, false);
-        if (sub !== "equip1" && sub !== "equip4") return false;
-        if (player.countCards("h") > player.getHandcardLimit() - 1) return false;
+      // 这回合打算出几张普通的【杀】（给装备规则 xd_ai_gear 用）：要留一张杀，两张以上才出（不缺杀，你 10-24）；
+      // 神机把杀当成别的牌（有“之”）时一张也不出。韩信本来就特别要牌（你 11-08 16:53），用不上的武器、−1 马混在手牌里。
+      gearShas(event, player) {
+        const skill = lib.skill.xd_shenji_ai, real = skill.countReal(player, "sha");
+        if (real < 2) return 0;
         try {
-          return !lib.skill.xd_shenji_ai.attackSoon(event, player, card);
+          if (lib.skill.xd_shenji.getNeedName(event, player)) return 0;
         } catch (e) {
-          return false;
+          return 0;
         }
-      },
-      // 这一回合用不用得上这件武器 / −1 马。
-      attackSoon(event, player, card) {
-        const skill = lib.skill.xd_shenji_ai, sub = get.subtype(card, false);
-        const foes = game.filterPlayer(target => skill.foe(player, target));
-        if (!foes.length) return false;
-        // −1 马：手里有顺手牵羊，有敌人差一步够不着（距离 2）、身上有牌可拿。
-        if (sub === "equip4" && player.getCards("hs").some(current => get.name(current, player) === "shunshou") &&
-            foes.some(target => get.distance(player, target) === 2 && target.countCards("hej") > 0)) return true;
-        // 这回合打得出普通的【杀】：还有次数、不缺杀（两张以上，你 10-24）、神机不把杀当成别的牌（没有“之”）。
-        if (!(player.getCardUsable("sha") > 0) || skill.countReal(player, "sha") < 2) return false;
-        if (lib.skill.xd_shenji.getNeedName(event, player)) return false;
-        // 武器：要打就装（加距离、加效果）；−1 马：有敌人现在够不着、减一就够得着才装。
-        if (sub === "equip1") return true;
-        return foes.some(target => !player.inRange(target) && get.distance(player, target) - 1 <= player.getAttackRange());
+        return real - 1;
       },
       // 第七条第 4 点：手里这张武器要不要顶掉身上那把。1＝要换，-1＝不换，0＝不归这里管（照本体）。
       weaponSwap(player, card) {
@@ -18027,7 +18178,8 @@ function createXdLegacyPack() {
         return plan;
       },
       // 回合末手里留一张牌值多少（牌）。
-      keepValue: { tao: 1.6, shan: 1.2, wuxie: 1, jiu: 0.4, wuzhong: 0.9, sha: 0.7 },
+      // 顺、拆、决斗、借刀、铁索这些进攻锦囊和南蛮万箭一样留格子（你 11-08 17:03），排在杀前面。
+      keepValue: { tao: 1.6, shan: 1.2, wuxie: 1, jiu: 0.4, wuzhong: 0.9, sha: 0.7, shunshou: 0.75, guohe: 0.75, juedou: 0.75, jiedao: 0.75, tiesuo: 0.75 },
       // 用一张锦囊的收益（牌），本体判断有合适目标时才算。
       trickValue: { shunshou: 1.5, guohe: 1, huogong: 0.5, tiesuo: 0.6, jiedao: 0.8, wugu: 0.3, taoyuan: 1 },
       // 别人回合可能被要的牌：[到下个回合前被要到的机会, 接住一次值几张牌]。
