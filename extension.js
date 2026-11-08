@@ -9728,6 +9728,485 @@ function createXdPengyangAi() {
 
 
 
+// 荀淑【神君】【八龙】电脑出牌（11-08，你 11-07 12:56 "直接做"）。只影响电脑（含托管）；技能文字、规则、玩家操作一律不动。
+// 牌值一律用扩展里已有的价目，不另立：手牌的价 xd_huanwen_ai.prices（虞姬、桓温、彭羕同一套），一张新牌 W，装备 xd_huanwen_ai.equipCost，
+// 杀价、拆价 xd_ai_goude，回血 xd_ai_core；弃牌阶段的留牌价＝本体弃牌时用的那个（get.useful，闪杀南蛮万箭按 xd_ai_keep 的格子）。
+// 1. 【神君】（扩展改成锁定技）：有人用即时牌时，他手里的同名牌明置；这个阶段结束时，他必须拿“明置牌数”张牌当一张明置牌的牌名用。
+//    明置的牌越多，每个阶段末要搭进去的牌越多；只明置一两张好牌名时，每次是拿一张不要的牌换一张好牌。
+//    - 牌名：挑现在用掉最值的（无中两张新牌、杀打最值的人、拆顺拆最值的那张、桃回血……）。
+//    - 材料（正好“明置牌数”张）：价最低的；再算上用完以后还明置着的牌往后几个阶段末的账
+//      （约 1.5 次 ×（其中最好的牌名值多少 − 每张明置牌要搭的一张不要的牌）：只剩一张好牌名是赚的，多了是亏的），
+//      以及用完以后锦囊是不是手里唯一最多的一类（八龙；当【桃】用、这回合体力还没变过时，回血马上摸到八张）。
+// 2. 【八龙】（扩展改成摸至八张）：每回合第一次体力变化后，若锦囊是手牌里唯一最多的一类，展示手牌并摸到八张。
+//    - 自己出牌阶段受了伤、这回合体力还没变过、手里有桃，且出完能出的杀、装备以后锦囊是唯一最多的一类：
+//      先出杀、装装备（手牌越少摸得越多），再吃桃摸到八张，锦囊都压到摸完以后（先用无中摸的牌会被“摸到八张”吞掉）。
+//      桃这次用不出、或者凑不成时照原来打。
+//    - 弃牌阶段：在本体的留牌价上把“锦囊是唯一最多的一类”算进账（别人回合里体力一变就摸到八张：约每人两成机会 ×（8 − 留下几张）张新牌），
+//      连同明置牌往后的账；比原来的弃法多赚 0.3 张以上才改。
+//    - 同名牌先用明置的那张（少一张明置牌，阶段末少搭一张）。
+function createXdXunshuAi() {
+  const A = {
+    margin: 0.3,
+    // 别人每个回合约两成机会让他体力变化（挨打、被救）。
+    hpRate: 0.2,
+    // 用完以后还明置着的牌：往后约这么多次阶段末还要换（打过折）。
+    futureConv: 1.5,
+    // 每张明置牌阶段末要搭一张不要的牌：约半张新牌。
+    cheapRate: 0.5,
+    taoOrder: 10.5,
+    // 组合太多时只在价低的牌里挑（挑材料、弃牌）。
+    capConv: 2000,
+    capDiscard: 500,
+    _busy: 0,
+    num(v, d) {
+      return typeof v === "number" && Number.isFinite(v) ? v : d;
+    },
+    H() {
+      return lib.skill.xd_huanwen_ai;
+    },
+    human(player) {
+      return !player || !!lib.skill.xd_ai_core?.humanActing?.(player);
+    },
+    mine(player) {
+      try {
+        return !!player && (player.hasSkill("clanshenjun") || player.hasSkill("clanbalong")) && !A.human(player);
+      } catch (e) {
+        return false;
+      }
+    },
+    ctx(player, hand) {
+      return A.H().ctx(player, hand);
+    },
+    shown(player) {
+      try {
+        return lib.skill.clanshenjun?.getShownCards?.(player) || [];
+      } catch (e) {
+        return [];
+      }
+    },
+    // cards 里所有 k 张的组合；太多时只在 must 和价最低的那些牌里挑。
+    subsets(cards, k, price, cap, must = []) {
+      if (k <= 0) return [[]];
+      if (k > cards.length) return [];
+      const C = n => {
+        let count = 1;
+        for (let i = 0; i < k; i++) count = (count * (n - i)) / (i + 1);
+        return count;
+      };
+      let pool = cards;
+      if (C(pool.length) > cap) {
+        const sorted = cards.slice().sort((a, b) => price(a) - price(b));
+        pool = must.filter(card => cards.includes(card));
+        for (const card of sorted) {
+          if (pool.includes(card)) continue;
+          if (pool.length >= k && C(pool.length + 1) > cap) break;
+          pool.push(card);
+        }
+        if (C(pool.length) > cap) return [sorted.slice(0, k)];
+      }
+      const out = [];
+      const walk = (start, acc) => {
+        if (acc.length === k) {
+          out.push(acc.slice());
+          return;
+        }
+        for (let i = start; i <= pool.length - (k - acc.length); i++) {
+          acc.push(pool[i]);
+          walk(i + 1, acc);
+          acc.pop();
+        }
+      };
+      walk(0, []);
+      return out;
+    },
+    // ---- 八龙 ----
+    dominant(cards) {
+      if (!cards.length) return false;
+      const map = {};
+      for (const card of cards) {
+        const t = get.type2(card);
+        map[t] = (map[t] || 0) + 1;
+      }
+      const list = Object.entries(map).sort((a, b) => b[1] - a[1]);
+      return list[0][0] === "trick" && (list.length === 1 || list[0][1] > list[1][1]);
+    },
+    changed(player) {
+      try {
+        return game.getGlobalHistory("changeHp", evt => evt.player === player).length > 0;
+      } catch (e) {
+        return true;
+      }
+    },
+    odds(player) {
+      const k = Math.max(1, game.countPlayer(current => current !== player));
+      return 1 - Math.pow(1 - A.hpRate, k);
+    },
+    // 手里留 n 张、锦囊是唯一最多的一类：值几张（别人回合里体力一变就摸到八张）。
+    baBonus(player, n, W) {
+      if (!player.hasSkill("clanbalong")) return 0;
+      return A.odds(player) * Math.max(0, 8 - n) * W;
+    },
+    // ---- 神君 ----
+    // 视为用一张 name（神君，不计次数）现在值几张；同虞姬【曲兴】规划里“现在用掉”的价。
+    nameValue(player, name, nature, c) {
+      const core = lib.skill.xd_ai_core, goude = lib.skill.xd_ai_goude;
+      const W = c.X.W;
+      const vcard = { name, isCard: true };
+      if (nature) vcard.nature = nature;
+      if (name === "sha") {
+        let best = 0;
+        for (const target of game.filterPlayer(current => current !== player)) {
+          let ok = false;
+          try {
+            ok = player.canUse(vcard, target, true, false);
+          } catch (e) {}
+          if (ok && goude) best = Math.max(best, A.num(goude.shaValue(player, target, c.X.side), 0));
+        }
+        return best;
+      }
+      if (name === "wuzhong") return 2 * W * (1 - c.X.block);
+      if (name === "guohe" || name === "shunshou") {
+        let best = 0;
+        for (const target of game.filterPlayer(current => current !== player)) {
+          let reach = false;
+          try {
+            reach = player.canUse(vcard, target);
+          } catch (e) {}
+          if (!reach) continue;
+          const w = c.X.side.get(target) ?? 0;
+          const loot = name === "shunshou" ? 0.5 * W : 0;
+          if (w > 0.3) {
+            for (const card of target.getCards("j")) {
+              let v = 0;
+              try {
+                v = w * core.delayValue(player, target, card.viewAs || get.name(card, target));
+              } catch (e) {}
+              best = Math.max(best, v + loot);
+            }
+          }
+          let n = 0;
+          try {
+            n = target.countDiscardableCards(player, "hej");
+          } catch (e) {}
+          if (n && goude) best = Math.max(best, A.num(goude.chaiValue(player, target, c.X.side), 0) + loot);
+        }
+        return best;
+      }
+      if (name === "tao") return player.isDamaged() ? A.num(core.healValue(Math.max(1, player.hp)), 0) : 0;
+      if (name === "jiu") return 0.2;
+      let ok = false;
+      try {
+        ok = !!player.hasValueTarget?.(vcard);
+      } catch (e) {}
+      return ok ? 1 : 0;
+    },
+    // 一组明置牌往后几个阶段末的账：约 1.5 次 ×（其中最好的牌名 − 每张搭一张不要的牌）。
+    futureOf(left, tmpl, W) {
+      if (!left.length) return 0;
+      return A.futureConv * (Math.max(...left.map(tmpl)) - A.cheapRate * W * left.length);
+    },
+    // 每张明置牌的牌名现在值多少（用不出的算 0）。
+    templates(player, c) {
+      const values = new Map();
+      const keyOf = card => get.name(card, player) + "|" + (get.nature(card, player) || "");
+      for (const card of A.shown(player)) {
+        const key = keyOf(card);
+        if (values.has(key)) continue;
+        let v = 0;
+        try {
+          const name = get.name(card, player), nature = get.nature(card, player) || "";
+          const vcard = { name, isCard: true };
+          if (nature) vcard.nature = nature;
+          if (player.hasUseTarget(vcard)) v = A.nameValue(player, name, nature, c);
+        } catch (e) {}
+        values.set(key, v);
+      }
+      return card => A.num(values.get(keyOf(card)), 0);
+    },
+    // 现在是哪个阶段（神君在阶段结束时换牌；同神君本身找阶段的办法）。
+    phaseNow() {
+      const evt = _status.event;
+      for (const name of lib.phaseName || []) {
+        let phase = null;
+        try {
+          phase = evt?.getParent?.(name);
+        } catch (e) {}
+        if (phase && phase.name === name) return name;
+      }
+      return null;
+    },
+    // 这次阶段末换牌的打算：{ link（牌名按钮）, value, cards（材料，价从低到高）}；不用换时 null。
+    makeConv(player) {
+      const S = A.shown(player), N = S.length;
+      if (!N) return null;
+      const list = lib.skill.clanshenjun.getVCardList(player);
+      if (!list.length) return null;
+      const hand = player.getCards("h"), hes = player.getCards("hes");
+      if (hes.length < N) return null;
+      const c = A.ctx(player, hand);
+      const W = c.X.W;
+      const tmpl = A.templates(player, c);
+      const own = _status.currentPhase === player;
+      // 手牌的价：自己出牌阶段还没到时按“现在用掉/留着”较高的那个（虞姬、桓温同一套）；出牌阶段过了、别人回合里只按留着的价。
+      const phase = own ? A.phaseNow() : null;
+      const early = ["phaseZhunbei", "phaseJudge", "phaseDraw"].includes(phase);
+      // 锦囊最多留到别人回合里（自己回合到弃牌阶段才定下手牌）。
+      const late = !own || ["phaseDiscard", "phaseJieshu"].includes(phase);
+      const pm = early ? A.H().prices(c, hand) : lib.skill.xd_ai_keep.values(player, hand, "use", c.threat);
+      const price = card => {
+        if (hand.includes(card)) return A.num(pm.get(card), 0.6);
+        if (get.position(card) === "e") return A.H().equipCost(player, card);
+        return 0.6;
+      };
+      // 当【桃】用、这回合体力还没变过：回血马上发动八龙。
+      const now = player.hasSkill("clanbalong") && player.isDamaged() && !A.changed(player);
+      const sets = A.subsets(hes, N, price, A.capConv, S);
+      const bestSet = immediate => {
+        let pick = null;
+        for (const set of sets) {
+          let v = 0;
+          for (const card of set) v -= price(card);
+          v += A.futureOf(
+            S.filter(card => !set.includes(card)),
+            tmpl,
+            W
+          );
+          const rest = hand.filter(card => !set.includes(card));
+          if (A.dominant(rest)) {
+            if (immediate) v += Math.max(0, 8 - rest.length) * W;
+            else if (late) v += A.baBonus(player, rest.length, W);
+          }
+          if (!pick || v > pick.v) pick = { set, v };
+        }
+        return pick;
+      };
+      const plain = bestSet(false);
+      if (!plain) return null;
+      const quick = now && list.some(link => link[2] === "tao") ? bestSet(true) : null;
+      let best = null;
+      for (const link of list) {
+        const v = A.nameValue(player, link[2], link[3], c);
+        const pick = link[2] === "tao" && quick ? quick : plain;
+        if (!best || v + pick.v > best.total) best = { link, value: v, total: v + pick.v, set: pick.set };
+      }
+      const cards = best.set.slice().sort((a, b) => price(a) - price(b));
+      return { link: best.link, value: best.value, cards };
+    },
+    convPlan(player) {
+      const key = [
+        Number(game.phaseNumber) || 0,
+        player.getCards("hes").map(card => card.cardid).join(),
+        A.shown(player).map(card => card.cardid).join(),
+        player.hp,
+        player.maxHp,
+        A.changed(player) ? 1 : 0
+      ].join("|");
+      if (player._xd_xunshu_conv?.key === key) return player._xd_xunshu_conv.plan;
+      let plan = null;
+      A._busy++;
+      try {
+        plan = A.makeConv(player);
+      } catch (e) {
+        plan = null;
+      } finally {
+        A._busy--;
+      }
+      player._xd_xunshu_conv = { key, plan };
+      return plan;
+    },
+    // ---- 接到神君上的钩子：返回 undefined 时照原来（玩家自己操作时就是这样）----
+    // 挑牌名（必须挑一个）：打算里的那个 100，别的 1。
+    pickName(player, link) {
+      if (!A.mine(player) || !Array.isArray(link)) return undefined;
+      const plan = A.convPlan(player);
+      if (!plan) return undefined;
+      return plan.link[2] === link[2] && (plan.link[3] || "") === (link[3] || "") ? 100 : 1;
+    },
+    // 挑材料（必须正好那么多张）：打算里的按价从低到高 20、19……，别的 −5。
+    pickMaterial(player, card) {
+      if (!A.mine(player)) return undefined;
+      const plan = A.convPlan(player);
+      if (!plan) return undefined;
+      const i = plan.cards.indexOf(card);
+      return i >= 0 ? 20 - i : -5;
+    },
+    // ---- 八龙：出牌阶段 ----
+    baseOrder(player, card) {
+      A._busy++;
+      try {
+        return A.num(get.order(card, player), 0);
+      } catch (e) {
+        return 0;
+      } finally {
+        A._busy--;
+      }
+    },
+    // { tao, hold }：hold＝先出杀、装装备，桃和锦囊都压着；不压时这张桃先吃。不打算时 null。
+    baPlan(player, evt) {
+      if (!player.hasSkill("clanbalong") || !player.isDamaged() || A.changed(player)) return null;
+      const out = Array.isArray(evt?._aiexclude) ? evt._aiexclude : [];
+      const hand = player.getCards("h");
+      const tao = hand.find(card => get.name(card, player) === "tao" && !out.includes(card));
+      if (!tao || !(A.baseOrder(player, tao) > 0)) return null;
+      const rest = hand.filter(card => card !== tao);
+      let slots = 0;
+      try {
+        slots = Math.max(0, Number(player.getCardUsable("sha")) || 0);
+      } catch (e) {}
+      const ready = card => {
+        if (out.includes(card) || !(A.baseOrder(player, card) > 0)) return false;
+        try {
+          return !!player.hasValueTarget(card);
+        } catch (e) {
+          return false;
+        }
+      };
+      const shas = rest.filter(card => get.name(card, player) === "sha" && ready(card)).slice(0, Math.min(slots, 8));
+      const equips = rest.filter(card => get.type(card) === "equip" && ready(card));
+      const after = rest.filter(card => !shas.includes(card) && !equips.includes(card));
+      if (!A.dominant(after) || 8 - after.length < 1) return null;
+      return { tao, hold: after.length < rest.length };
+    },
+    baPlanOf(player, evt) {
+      const key = [
+        player.getCards("hes").map(card => card.cardid).join(),
+        player.hp,
+        player.maxHp,
+        A.changed(player) ? 1 : 0,
+        Array.isArray(evt._aiexclude) ? evt._aiexclude.length : 0,
+        Number(player.getCardUsable?.("sha")) || 0
+      ].join("|");
+      if (evt._xd_xunshu?.key === key) return evt._xd_xunshu.plan;
+      let plan = null;
+      try {
+        plan = A.baPlan(player, evt);
+      } catch (e) {
+        plan = null;
+      }
+      evt._xd_xunshu = { key, plan };
+      return plan;
+    },
+    // ---- 弃牌阶段 ----
+    discarding(player) {
+      const evt = _status.event;
+      if (evt?.name !== "chooseToDiscard" || evt.player !== player) return null;
+      let parent = null;
+      try {
+        parent = evt.getParent();
+      } catch (e) {}
+      if (parent?.name !== "phaseDiscard") return null;
+      return A.mine(player) ? evt : null;
+    },
+    discardPlan(player, evt) {
+      if (evt._xd_xunshu_discard !== undefined) return evt._xd_xunshu_discard;
+      let chosen = null;
+      A._busy++;
+      try {
+        let d = 0;
+        try {
+          d = get.select(evt.selectCard)[0];
+        } catch (e) {}
+        const hand = player.getCards("h");
+        const cards = hand.filter(card => {
+          try {
+            return lib.filter.cardDiscardable(card, player, evt);
+          } catch (e) {
+            return true;
+          }
+        });
+        if (d > 0 && d < cards.length) {
+          const c = A.ctx(player, hand), W = c.X.W;
+          const S = A.shown(player);
+          const tmpl = A.templates(player, c);
+          // 本体弃牌时的留牌价（闪杀南蛮万箭已按 xd_ai_keep 的格子算好）。
+          const useful = new Map();
+          for (const card of hand) {
+            let v = 3;
+            try {
+              v = get.useful(card, player);
+            } catch (e) {}
+            useful.set(card, A.num(v, 3) / 5);
+          }
+          const price = card => useful.get(card);
+          const valueOf = K => {
+            let v = 0;
+            for (const card of K) v += price(card);
+            if (A.dominant(K)) v += A.baBonus(player, K.length, W);
+            v += A.futureOf(
+              S.filter(card => K.includes(card)),
+              tmpl,
+              W
+            );
+            return v;
+          };
+          const score = D => valueOf(hand.filter(card => !D.includes(card)));
+          // 原来的弃法：留牌价最低的 d 张。
+          const D0 = cards
+            .slice()
+            .sort((a, b) => price(a) - price(b))
+            .slice(0, d);
+          const v0 = score(D0);
+          let best = { D: D0, v: v0 };
+          for (const D of A.subsets(cards, d, price, A.capDiscard)) {
+            const v = score(D);
+            if (v > best.v + 1e-9) best = { D, v };
+          }
+          if (best.v - v0 > A.margin) chosen = new Set(best.D);
+        }
+      } catch (e) {
+        chosen = null;
+      } finally {
+        A._busy--;
+      }
+      evt._xd_xunshu_discard = chosen;
+      return chosen;
+    },
+    // ---- 全局 mod（排在通用留牌后面）----
+    aiOrder(player, card, num) {
+      if (A._busy || typeof num !== "number" || get.itemtype(card) !== "card" || !A.mine(player)) return;
+      const evt = _status.event;
+      if (!evt || evt.name !== "chooseToUse" || evt.player !== player) return;
+      let out = num;
+      if (evt.type === "phase") {
+        const plan = A.baPlanOf(player, evt);
+        if (plan) {
+          if (card === plan.tao) out = plan.hold ? 0 : Math.max(out, A.taoOrder);
+          else if (get.type2(card) === "trick") out = 0;
+        }
+      }
+      // 同名牌先用明置的那张。
+      if (out > 0 && A.shown(player).includes(card)) out += 0.02;
+      return out === num ? undefined : out;
+    },
+    aiUseful(player, card, num) {
+      if (A._busy || typeof num !== "number" || get.itemtype(card) !== "card") return;
+      const evt = A.discarding(player);
+      if (!evt) return;
+      const chosen = A.discardPlan(player, evt);
+      if (chosen?.has(card)) return num - 1000;
+    },
+    globalSkill() {
+      return {
+        charlotte: true,
+        silent: true,
+        popup: false,
+        priority: 1,
+        mod: {
+          aiOrder(player, card, num) {
+            return lib.skill.xd_xunshu_ai?.aiOrder?.(player, card, num);
+          },
+          aiUseful(player, card, num) {
+            return lib.skill.xd_xunshu_ai?.aiUseful?.(player, card, num);
+          }
+        }
+      };
+    }
+  };
+  return A;
+}
+
+
+
 // 玄蝶当前帖子版的8名旧将：直接复用本体未改动技能，只覆盖人物规格与发生变化的技能。
 // 使用本体原 character ID，避免同名复制；扩展开启时以本帖规则覆盖本体现行版本。
 function createXdLegacyPack() {
@@ -9906,7 +10385,12 @@ function createXdLegacyPack() {
             if (!num || !list.length) return;
             const result = await player
               .chooseButton(["神君：将" + get.cnNumber(num) + "张牌当任意明置牌使用", [list, "vcard"]], true)
-              .set("ai", button => get.player().getUseValue({ name: button.link[2], nature: button.link[3] }))
+              .set("ai", button => {
+                // 电脑（含托管）照【神君】规划挑牌名（createXdXunshuAi.pickName）；玩家自己操作时照原来。
+                const planned = lib.skill.xd_xunshu_ai?.pickName?.(get.player(), button.link);
+                if (typeof planned === "number") return planned;
+                return get.player().getUseValue({ name: button.link[2], nature: button.link[3] });
+              })
               .forResult();
             if (!result?.bool || !result.links?.length) return;
             const name = result.links[0][2], nature = result.links[0][3];
@@ -9931,7 +10415,12 @@ function createXdLegacyPack() {
           },
           position: "hes",
           filterTarget: lib.filter.filterTarget,
-          check: card => 6 - get.value(card),
+          check: card => {
+            // 电脑（含托管）照【神君】规划挑材料（createXdXunshuAi.pickMaterial）；玩家自己操作时照原来。
+            const planned = lib.skill.xd_xunshu_ai?.pickMaterial?.(_status.event?.player, card);
+            if (typeof planned === "number") return planned;
+            return 6 - get.value(card);
+          },
           log: false
         }
       }
@@ -17479,6 +17968,10 @@ function createXdLegacyPack() {
     // 彭羕【嚣翻】【侻失】的出牌规划（见 createXdPengyangAi）；嚣翻是本体技能，这里接上先后和挑牌。
     lib.skill.xd_pengyang_ai = createXdPengyangAi();
     lib.skill.xd_pengyang_ai.install();
+    // 荀淑【神君】【八龙】的出牌规划（见 createXdXunshuAi）；神君挑牌名、挑材料在技能里接，八龙的先后、弃牌在这个全局技能里。
+    lib.skill.xd_xunshu_ai = createXdXunshuAi();
+    lib.skill.xd_ai_xunshu = lib.skill.xd_xunshu_ai.globalSkill();
+    game.addGlobalSkill("xd_ai_xunshu");
     // 记下每名角色出牌阶段结束时手里的牌（你 11-02 12:48，谢安记牌用）：熬过出牌阶段的牌，电脑多半是留着不用的闪、桃、无懈、杀。
     lib.skill.xd_buping_memo = {
       charlotte: true,
