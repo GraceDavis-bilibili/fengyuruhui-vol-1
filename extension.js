@@ -10211,6 +10211,306 @@ function createXdXunshuAi() {
 
 
 
+// 张芝【笔心】【洗墨】电脑出牌（11-08，你 11-07 12:56 "直接做"）。笔心、洗墨、飞白都是本体技能，只改电脑（含托管）的决定；
+// 技能文字、规则、玩家操作一律不动。牌值一律用扩展里已有的价目：手牌的价 xd_huanwen_ai.prices / xd_ai_keep，一张新牌 W，
+// 杀价 xd_ai_goude，回血 xd_ai_core。
+// 规则（本体）：笔心＝声明一种类型（基本、锦囊、装备，每种限 1 次；洗墨三次以后限 3 次）和一种本轮没用过、有目标的基本牌，
+// 摸 3 张（第三次和以后摸 1 张），然后手里这一类的牌全部当这张基本牌用。前三次是准备、结束阶段发动（第一次任何人的，
+// 第二次只有自己的，第三次只有自己的结束阶段）；三次以后变成需要用基本牌时随时发动。
+// 本体电脑的毛病：随时发动的那一版挑类别时，按价排的表是英文、按钮是中文，对不上，等于只看哪类剩的次数多，
+// 常把一手基本牌（闪、桃、杀）全当一张牌用掉；出牌阶段最后总会发动一次；前三次挑类别只看手里这类牌的总价，不看摸牌。
+// 账（单位：张）：一次笔心＝摸 D 张里不是这一类的（D × W ×（1 − 这一类的比例））− 手里这一类的牌的价 + 当出来那张牌值多少
+//   （手里没有这一类时，只有摸到这一类才当得出来：乘上摸到的机会）。
+//   - 前三次：再加“离完整版近一步”（第一、二次半张，第三次一张半：早一轮解锁）；赚 0.3 张以上才发动。
+//   - 完整版：每用一次少一次机会（留着救急），记 1 张（濒死时不记）；出牌阶段赚 0.3 张以上才用；
+//     要闪、要桃时和“用手里合用的牌”“不用”比，多赚 0.3 张以上才用（手里的闪、桃要是这一类，也会一起当掉，账里算上）。
+function createXdZhangzhiAi() {
+  const A = {
+    margin: 0.3,
+    // 摸到各类的机会（军争牌堆：基本约一半，锦囊约三分之一，装备约七分之一）。
+    share: { basic: 0.52, trick: 0.34, equip: 0.14 },
+    progress: 0.5,
+    unlock: 1.5,
+    charge: 1,
+    need: 1.5,
+    dyingNeed: 5,
+    order: 12,
+    num(v, d) {
+      return typeof v === "number" && Number.isFinite(v) ? v : d;
+    },
+    H() {
+      return lib.skill.xd_huanwen_ai;
+    },
+    human(player) {
+      return !player || !!lib.skill.xd_ai_core?.humanActing?.(player);
+    },
+    ctx(player, hand) {
+      return A.H().ctx(player, hand);
+    },
+    marks(player) {
+      return player.countMark("olbixin");
+    },
+    // 还能声明的类型。
+    types(player) {
+      const num = A.marks(player) >= 3 ? 3 : 1;
+      return ["basic", "trick", "equip"].filter(type => player.countMark("olbixin_" + type) < num);
+    },
+    phaseNow() {
+      const evt = _status.event;
+      for (const name of lib.phaseName || []) {
+        let phase = null;
+        try {
+          phase = evt?.getParent?.(name);
+        } catch (e) {}
+        if (phase && phase.name === name) return name;
+      }
+      return null;
+    },
+    // 手牌的价：自己回合出牌阶段结束前按“现在用掉/留着”较高的那个（虞姬、桓温、荀淑同一套）；之后、别人回合里按留着的价。
+    priceMap(player, hand, c, ev) {
+      const own = _status.currentPhase === player;
+      const early = own && (ev?.type === "phase" || ["phaseZhunbei", "phaseJudge", "phaseDraw", "phaseUse"].includes(A.phaseNow()));
+      try {
+        return early ? A.H().prices(c, hand) : lib.skill.xd_ai_keep.values(player, hand, "use", c.threat);
+      } catch (e) {
+        return new Map();
+      }
+    },
+    late(player) {
+      return ["phaseDiscard", "phaseJieshu"].includes(A.phaseNow());
+    },
+    // 当一张 name 现在用掉值几张（杀打最值的那个人；桃回血；酒：这回合接下来还能出杀时下一刀 +1）。
+    useNow(player, name, nature, c) {
+      const core = lib.skill.xd_ai_core, goude = lib.skill.xd_ai_goude;
+      if (name === "sha") {
+        const vcard = { name, isCard: true };
+        if (nature) vcard.nature = nature;
+        let best = null;
+        for (const target of game.filterPlayer(current => current !== player)) {
+          let ok = false;
+          try {
+            ok = player.canUse(vcard, target, true, false);
+          } catch (e) {}
+          if (!ok || !goude) continue;
+          const v = A.num(goude.shaValue(player, target, c.X.side), 0);
+          if (best === null || v > best) best = v;
+        }
+        return best ?? 0;
+      }
+      if (name === "tao") return player.isDamaged() ? A.num(core.healValue(Math.max(1, player.hp)), 0) : 0;
+      if (name === "jiu") {
+        if (_status.currentPhase !== player || A.late(player) || player.hasSkill("jiu")) return 0;
+        let left = 0;
+        try {
+          left = Number(player.getCardUsable("sha")) || 0;
+        } catch (e) {}
+        if (!(left > 0) || !player.countCards("hs", card => get.name(card, player) === "sha")) return 0;
+        return 0.6 * Math.max(0, A.useNow(player, "sha", "", c));
+      }
+      return 0;
+    },
+    // 一次笔心（声明 type、当出来的牌值 gain）的账；当不出来时（手里、摸到的都没有这一类）照 fallback。
+    optionValue(player, type, gain, c, prices, D, fallback = 0) {
+      const W = c.X.W, p = A.share[type] ?? 0.3;
+      const mats = player.getCards("h", card => get.type2(card) === type);
+      let lost = 0;
+      for (const card of mats) lost += A.num(prices.get(card), 0.6);
+      const q = mats.length ? 1 : 1 - Math.pow(1 - p, D);
+      return D * W * (1 - p) - lost + q * gain + (1 - q) * fallback;
+    },
+    // ---- 前三次（准备、结束阶段）----
+    // { type, link, value }；不发动时 null。
+    triggerPlan(player) {
+      const list = lib.skill.olbixin.getList(player);
+      const types = A.types(player);
+      if (!list.length || !types.length) return null;
+      const hand = player.getCards("h");
+      const c = A.ctx(player, hand), W = c.X.W;
+      const prices = A.priceMap(player, hand, c, null);
+      const count = A.marks(player);
+      // 洗墨在发动时先加一次，所以第三次只摸一张。
+      const D = count + 1 >= 3 ? 1 : 3;
+      const bonus = (count >= 2 ? A.unlock : A.progress) * W;
+      let best = null;
+      for (const link of list) {
+        const gain = A.useNow(player, link[2], link[3], c);
+        for (const type of types) {
+          const value = A.optionValue(player, type, gain, c, prices, D) + bonus;
+          if (!best || value > best.value) best = { type, link, value };
+        }
+      }
+      return best && best.value > A.margin ? best : null;
+    },
+    // ---- 完整版（需要用基本牌时）----
+    fits(player, ev, card) {
+      try {
+        return !!ev.filterCard(card, player, ev);
+      } catch (e) {
+        return false;
+      }
+    },
+    // 要用牌时“能用出来”值几张：濒死 5（救队友按他多像队友打折，敌人 0）；挨杀要闪＝挨一下的价（1 血按濒死）；别的 1.5。
+    needOf(player, ev, c) {
+      if (ev?.type === "dying") {
+        const dying = ev.dying;
+        if (!dying || dying === player) return A.dyingNeed;
+        return A.dyingNeed * Math.max(0, Math.min(1, A.num(c.X.side.get(dying), 0)));
+      }
+      if (ev?.type === "respondShan") {
+        if (player.hp <= 1) return A.dyingNeed;
+        try {
+          return Math.max(A.need, A.num(lib.skill.xd_ai_core.hpCost(player.hp), A.need));
+        } catch (e) {}
+      }
+      return A.need;
+    },
+    // { type, link, value, alt, use }：use＝这次用笔心。
+    fullPlan(player, ev) {
+      const list = Array.isArray(ev.olbixin_list) ? ev.olbixin_list : [];
+      const types = A.types(player);
+      if (!list.length || !types.length) return null;
+      const hand = player.getCards("h");
+      const c = A.ctx(player, hand);
+      const prices = A.priceMap(player, hand, c, ev);
+      const phase = ev.type === "phase";
+      let alt = 0, need = 0, charge = A.charge;
+      if (!phase) {
+        need = A.needOf(player, ev, c);
+        if (ev.type === "dying") charge = 0;
+        // 手里有合用的：用价最低的那张。
+        const own = player.getCards("hs", card => A.fits(player, ev, card));
+        if (own.length) alt = Math.max(0, need - Math.min(...own.map(card => (hand.includes(card) ? A.num(prices.get(card), 0.6) : 0.3))));
+      }
+      // 出牌阶段手里还有能出的杀：笔心当杀只是省下手里那张（留着的价）。
+      let realSha = null;
+      if (phase) {
+        let left = 0;
+        try {
+          left = Number(player.getCardUsable("sha")) || 0;
+        } catch (e) {}
+        const shas = hand.filter(card => get.name(card, player) === "sha");
+        if (left > 0 && shas.length >= left) {
+          const keep = lib.skill.xd_ai_keep.values(player, hand, "use", c.threat);
+          realSha = Math.min(...shas.map(card => A.num(keep.get(card), 0.6)));
+        }
+      }
+      let best = null;
+      for (const link of list) {
+        let gain = phase ? A.useNow(player, link[2], link[3], c) : need;
+        if (phase && link[2] === "sha" && realSha !== null) gain = Math.min(gain, realSha);
+        for (const type of types) {
+          const value = A.optionValue(player, type, gain, c, prices, 1, alt) - charge;
+          if (!best || value > best.value) best = { type, link, value };
+        }
+      }
+      if (!best) return null;
+      best.alt = alt;
+      best.use = best.value > alt + A.margin;
+      return best;
+    },
+    key(player, ev) {
+      return [
+        Number(game.phaseNumber) || 0,
+        player.getCards("hes").map(card => card.cardid).join(),
+        A.marks(player),
+        ["basic", "trick", "equip"].map(type => player.countMark("olbixin_" + type)).join(),
+        player.hp,
+        player.maxHp,
+        (ev.olbixin_list || []).map(link => link[2] + (link[3] || "")).join(),
+        Number(player.getCardUsable?.("sha")) || 0
+      ].join("|");
+    },
+    fullPlanOf(player, ev) {
+      const key = A.key(player, ev);
+      if (ev._xd_zhangzhi?.key === key) return ev._xd_zhangzhi.plan;
+      let plan = null;
+      try {
+        plan = A.fullPlan(player, ev);
+      } catch (e) {
+        plan = null;
+      }
+      ev._xd_zhangzhi = { key, plan };
+      return plan;
+    },
+    // 当前这次“需要用牌”的事件（_status.event 就是它；挑按钮时可能是它的下一层）。
+    useEvent(player) {
+      let ev = _status.event;
+      for (let i = 0; i < 3 && ev; i++) {
+        if (ev.name === "chooseToUse" && ev.player === player) return ev;
+        ev = ev.getParent?.();
+      }
+      return null;
+    },
+    // ---- 接到本体技能上的钩子：返回 undefined 时照本体原来的写法（玩家自己操作时就是这样）----
+    orderOf(player) {
+      player = player || get.player?.() || _status.event?.player;
+      if (!player || A.human(player)) return undefined;
+      const ev = A.useEvent(player);
+      if (!ev) return undefined;
+      const plan = A.fullPlanOf(player, ev);
+      return plan?.use ? A.order : 0;
+    },
+    pick(player, link) {
+      if (!player || A.human(player)) return undefined;
+      const ev = A.useEvent(player);
+      if (!ev) return undefined;
+      const plan = A.fullPlanOf(player, ev);
+      if (!plan?.use) return 0;
+      if (typeof link === "string") return (lib.skill.olbixin.map?.[link] ?? link) === plan.type ? 20 : 0;
+      if (Array.isArray(link)) return link[2] === plan.link[2] && (link[3] || "") === (plan.link[3] || "") ? 19 : 0;
+      return 0;
+    },
+    // 前三次：电脑直接按账定（发动与否、类别、牌名）；玩家自己操作时照本体的对话框。
+    costPlan(player) {
+      if (!player || A.human(player)) return undefined;
+      return A.triggerPlan(player);
+    },
+    install() {
+      const info = lib.skill.olbixin;
+      if (!info || info._xd_zhangzhi) return;
+      const cost = info.cost;
+      if (typeof cost === "function") {
+        info.cost = async function (event, trigger, player) {
+          let plan;
+          try {
+            plan = lib.skill.xd_zhangzhi_ai.costPlan(player);
+          } catch (e) {
+            plan = undefined;
+          }
+          if (plan === undefined) return cost.apply(this, arguments);
+          event.result = plan ? { bool: true, cost_data: [get.translation(plan.type), plan.link] } : { bool: false };
+        };
+      }
+      const full = lib.skill.olbixin_full;
+      if (full?.ai) {
+        const original = full.ai.order;
+        full.ai.order = function (item, player) {
+          try {
+            const v = lib.skill.xd_zhangzhi_ai.orderOf(player);
+            if (typeof v === "number") return v;
+          } catch (e) {}
+          return typeof original === "function" ? original.apply(this, arguments) : original;
+        };
+      }
+      const cb = full?.chooseButton;
+      if (cb) {
+        const check = cb.check;
+        cb.check = function (button) {
+          try {
+            const v = lib.skill.xd_zhangzhi_ai.pick(get.player?.() || _status.event?.player, button?.link);
+            if (typeof v === "number") return v;
+          } catch (e) {}
+          return typeof check === "function" ? check.apply(this, arguments) : 1;
+        };
+      }
+      info._xd_zhangzhi = true;
+    }
+  };
+  return A;
+}
+
+
+
 // 玄蝶当前帖子版的8名旧将：直接复用本体未改动技能，只覆盖人物规格与发生变化的技能。
 // 使用本体原 character ID，避免同名复制；扩展开启时以本帖规则覆盖本体现行版本。
 function createXdLegacyPack() {
@@ -17976,6 +18276,9 @@ function createXdLegacyPack() {
     lib.skill.xd_xunshu_ai = createXdXunshuAi();
     lib.skill.xd_ai_xunshu = lib.skill.xd_xunshu_ai.globalSkill();
     game.addGlobalSkill("xd_ai_xunshu");
+    // 张芝【笔心】的出牌规划（见 createXdZhangzhiAi）；笔心、洗墨是本体技能，这里接上发动、先后和挑类别、牌名。
+    lib.skill.xd_zhangzhi_ai = createXdZhangzhiAi();
+    lib.skill.xd_zhangzhi_ai.install();
     // 记下每名角色出牌阶段结束时手里的牌（你 11-02 12:48，谢安记牌用）：熬过出牌阶段的牌，电脑多半是留着不用的闪、桃、无懈、杀。
     lib.skill.xd_buping_memo = {
       charlotte: true,
