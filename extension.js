@@ -9121,6 +9121,251 @@ function createXdYujiAi() {
 
 
 
+// 桓温【行将】【欲罢】电脑出牌（11-08，你 11-07 12:56 "直接做"）。只影响电脑（含托管）；技能文字、规则、玩家操作一律不动。
+// 牌值一律用扩展里已有的价目，不另立：手里每张牌的价同虞姬【曲兴】规划（xd_yuji_ai.costs：“留着值多少”和“现在用掉值多少”取大的；
+// 一张新牌按 xd_yuji_ai.fresh），往后几轮 xd_ai_core.horizon（同勾践【投醪】）。
+// 1. 【行将】：弃两张同名即时牌，换一个“每轮限一次，视为使用这张牌”的技能。技能这一轮就能用，以后每轮一次，
+//    所以值“这一轮手里多一张这种牌”＋“往后每轮一张”×往后几轮。往后每轮一张值多少：手里没有这种牌时值第一张的价，
+//    手里有了只值多出来那张的价，按牌堆里这种牌的多少算“手里（约四张）一张都没有”的机会。代价是弃掉的两张（最便宜的两张）。
+//    挑赚得最多的牌名，赚 0.3 张以上才发动；已经有的牌名不再做（原来会白扔两张牌把同一个技能再做一遍），
+//    原来挑的是最便宜的一对，现在挑最值的（两张无中换“每轮一张无中”，比两张杀换“每轮一张杀”值得多）。
+// 2. 行将做出来的技能：每轮限一次，用不掉就浪费，所以和手里同名的牌一样能用时先用技能、实体牌留着（见技能上的 ai.order）。
+// 3. 【欲罢】：拒绝一次 X 就加一，往后每次发动都多摸一张；发动＝付代价（弃一张 X 点的牌，或失去一个技能）把手牌摸到 X。
+//    发动的账：摸的牌（手牌上限再多两张以内一张算一张新牌，再多的算半张）− 代价（弃的牌按它的价，装备按本体价÷5，
+//    失去的技能按它往后几轮还值多少）。拒绝的账：往后大约还会发动几次（往后几轮 × 每轮约半次）× 多摸的那一张（按 0.75 张新牌）。
+//    发动比拒绝多 0.1 张以上才发动；X 到 13 以后弃牌付不了（没有 14 点的牌），拒绝只算三成。欲罢自己不主动丢。
+//    有负面技能时照原来：借机甩掉。
+function createXdHuanwenAi() {
+  const A = {
+    prefix: "bolhuanwen_",
+    margin: 0.3,
+    yubaMargin: 0.1,
+    order: 9.5,
+    // 往后每轮大约有几次【欲罢】值得发动：每轮约一次受伤或造成伤害，约一半时候手牌少、付得起。
+    yubaRate: 0.5,
+    // 多摸的“最后一张”值多少（多半在手牌上限附近，用不完）。
+    marginalCard: 0.75,
+    num(v, d) {
+      return typeof v === "number" && Number.isFinite(v) ? v : d;
+    },
+    // 手牌的价（同虞姬【曲兴】规划）：c = { player, threat, X, Y }。
+    ctx(player, hand) {
+      const core = lib.skill.xd_ai_core, keep = lib.skill.xd_ai_keep, Y = lib.skill.xd_yuji_ai;
+      const threat = keep.threat(player);
+      const side = core.sideMap(player);
+      const X = { W: 0.8, side, hand, block: 0 };
+      if (Y) {
+        X.W = Y.fresh(player, hand, threat);
+        X.block = Y.block(player, side);
+      }
+      return { player, threat, X, Y };
+    },
+    // 一手牌每张的价（Map）。
+    prices(c, cards) {
+      try {
+        if (c.Y) return c.Y.costs(c.player, cards, c.threat, c.X);
+        return lib.skill.xd_ai_keep.values(c.player, cards, "use", c.threat);
+      } catch (e) {
+        return new Map();
+      }
+    },
+    total(c, cards) {
+      const m = A.prices(c, cards);
+      let sum = 0;
+      for (const card of cards) sum += A.num(m.get(card), 0.6);
+      return sum;
+    },
+    // 手里（cards）再多一张 name 值多少。
+    marg(c, cards, name) {
+      return A.total(c, cards.concat([{ name, isCard: true }])) - A.total(c, cards);
+    },
+    // 往后每轮一张 name 值多少：手里没有这种牌时值第一张的价，有了只值多出来那张的价。
+    perRound(c, hand, name) {
+      const core = lib.skill.xd_ai_core;
+      const others = hand.filter(card => card.name !== name);
+      const first = A.marg(c, others, name);
+      const extra = A.marg(c, others.concat([{ name, isCard: true }]), name);
+      let share = 0;
+      try {
+        share = Number(core.pileShare(name)) || 0;
+      } catch (e) {}
+      const p0 = Math.pow(1 - Math.min(0.9, share), 4);
+      return Math.max(0, p0 * first + (1 - p0) * extra);
+    },
+    // 这一步【行将】做哪个牌名：{ name, cards, value }；不做返回 null。
+    plan(player) {
+      const core = lib.skill.xd_ai_core;
+      const hand = player.getCards("h");
+      const c = A.ctx(player, hand);
+      const price = A.prices(c, hand);
+      const base = A.total(c, hand);
+      const groups = new Map();
+      // 和技能本身一样按实体牌名、按 get.type 认“即时牌”（基本牌、普通锦囊）。
+      for (const card of player.getCards("he")) {
+        const type = get.type(card);
+        if (type !== "basic" && type !== "trick") continue;
+        if (!groups.has(card.name)) groups.set(card.name, []);
+        groups.get(card.name).push(card);
+      }
+      const G = core.horizon(player);
+      let best = null;
+      for (const [name, list] of groups) {
+        if (list.length < 2) continue;
+        // 已经有这个牌名的技能：再做一遍什么也得不到。
+        if (player.hasSkill(A.prefix + name, null, null, false)) continue;
+        list.sort((x, y) => A.num(price.get(x), 0.6) - A.num(price.get(y), 0.6));
+        const cards = list.slice(0, 2);
+        const after = hand.filter(card => !cards.includes(card));
+        // 弃掉两张少了多少；这一轮技能就能用＝手里（弃完以后）多一张；往后每轮一张。
+        const cost = base - A.total(c, after);
+        const value = A.marg(c, after, name) + G * A.perRound(c, hand, name) - cost;
+        if (!best || value > best.value) best = { name, cards, value };
+      }
+      return best && best.value > A.margin ? best : null;
+    },
+    key(player) {
+      let owned = [];
+      try {
+        owned = player.getSkills(null, false, false).filter(skill => String(skill).startsWith(A.prefix));
+      } catch (e) {}
+      return [
+        Number(game.phaseNumber) || 0,
+        player.getCards("he").map(card => card.cardid).join(),
+        player.hp,
+        player.maxHp,
+        game.players.length,
+        owned.join()
+      ].join("|");
+    },
+    // 同一局面只算一次。
+    aiPlan(player) {
+      const key = A.key(player);
+      if (player._xd_huanwen_box?.key === key) return player._xd_huanwen_box.plan;
+      let plan = null;
+      try {
+        plan = A.plan(player);
+      } catch (e) {
+        plan = null;
+      }
+      player._xd_huanwen_box = { key, plan };
+      return plan;
+    },
+    // ---- 接到技能上的钩子：返回 undefined 时照技能原来的写法（玩家自己操作时就是这样）----
+    // 行将 ai.order：值得做 → 9.5（排在出牌最前，做出来的技能这回合就能用）；不值得 → 0（不做）。
+    orderOf(player) {
+      player = player || get.player?.() || _status.event?.player;
+      if (!player) return 0;
+      if (lib.skill.xd_ai_core?.humanActing?.(player)) return undefined;
+      return A.aiPlan(player) ? A.order : 0;
+    },
+    // 行将 check（挑牌）：规划里的两张给正分，凑够两张后 0。
+    pick(player, card) {
+      if (!player || lib.skill.xd_ai_core?.humanActing?.(player)) return undefined;
+      const plan = A.aiPlan(player);
+      if (!plan) return undefined;
+      if (ui.selected.cards.length >= plan.cards.length) return 0;
+      const i = plan.cards.indexOf(card);
+      return i < 0 ? 0 : 20 - i;
+    },
+    // ---- 欲罢 ----
+    // 摸 d 张（摸之前手里 h 张）值几张：手牌上限再多两张以内一张算一张，再多的算半张。
+    drawValue(player, h, d) {
+      if (!(d > 0)) return 0;
+      let room = 2;
+      try {
+        room = player.getHandcardLimit() + 2 - h;
+      } catch (e) {}
+      const full = Math.max(0, Math.min(d, room));
+      return full + 0.5 * (d - full);
+    },
+    // 装备：本体价 ÷ 5（一张普通的牌算 1），0.3～2.5（同吴苋、勾践的口径）。
+    equipCost(player, card) {
+      let v = 4;
+      try {
+        v = Number(get.value(card, player));
+      } catch (e) {}
+      if (!Number.isFinite(v)) v = 4;
+      return Math.max(0.3, Math.min(2.5, v / 5));
+    },
+    // 失去这个技能少了多少（张）。
+    loseCost(player, skill, X, c) {
+      const core = lib.skill.xd_ai_core;
+      const G = core.horizon(player);
+      c = c || A.ctx(player, player.getCards("h"));
+      const info = get.info(skill);
+      if (info?.ai?.neg || info?.ai?.halfneg) return -1;
+      if (String(skill).startsWith(A.prefix)) {
+        // 行将做出来的：每轮一张这种牌，这一轮约还剩半轮。
+        const name = String(skill).slice(A.prefix.length);
+        return A.perRound(c, player.getCards("h"), name) * (G + 0.5);
+      }
+      // 欲罢自己：X 只涨不跌，越往后越值钱，丢了以前拒绝攒下的也全没了，电脑不主动丢（同原来的写法）。
+      if (skill === "bolyuba") return Infinity;
+      // 行将：往后每轮约六成机会凑出一对、做一个约值两张的技能，再加 1（原生核心技能）。
+      if (skill === "bolxingjiang") return 1.2 * G + 1;
+      // 别的技能（苏秦给的等）：每轮约一张。
+      return G;
+    },
+    // 【欲罢】发不发动：返回 "弃牌"、"失去技能"、"取消"；返回 undefined 时照原来（玩家自己操作、或有负面技能可甩）。
+    yuba(player, X, canDiscard, skills) {
+      const core = lib.skill.xd_ai_core, keep = lib.skill.xd_ai_keep;
+      A._lose = null;
+      if (!player || !core || !keep || core.humanActing(player)) return undefined;
+      skills = Array.isArray(skills) ? skills : [];
+      if (
+        skills.some(skill => {
+          const info = get.info(skill);
+          return info?.ai?.neg || info?.ai?.halfneg;
+        })
+      ) {
+        return undefined;
+      }
+      X = Number(X) || 0;
+      const G = core.horizon(player);
+      const hand = player.getCards("h");
+      const c = A.ctx(player, hand), W = c.X.W;
+      // 拒绝：X 加一，往后每次发动多摸一张。
+      const refuse = A.yubaRate * G * A.marginalCard * W * (X >= 13 ? 0.3 : 1);
+      let best = { control: "取消", value: refuse };
+      if (canDiscard) {
+        const base = A.total(c, hand);
+        let cheapest = null;
+        for (const card of player.getCards("he", card => lib.filter.cardDiscardable(card, player) && get.number(card) == X)) {
+          const inHand = hand.includes(card);
+          const cost = inHand ? base - A.total(c, hand.filter(x => x !== card)) : A.equipCost(player, card);
+          if (!cheapest || cost < cheapest.cost) cheapest = { card, cost, inHand };
+        }
+        if (cheapest) {
+          const h = hand.length - (cheapest.inHand ? 1 : 0);
+          const value = W * A.drawValue(player, h, X - h) - cheapest.cost;
+          if (value > best.value) best = { control: "弃牌", value };
+        }
+      }
+      let lose = null;
+      for (const skill of skills) {
+        const cost = A.loseCost(player, skill, X, c);
+        if (!lose || cost < lose.cost) lose = { skill, cost };
+      }
+      if (lose) {
+        const value = W * A.drawValue(player, hand.length, X - hand.length) - lose.cost;
+        if (value > best.value) best = { control: "失去技能", value, skill: lose.skill };
+      }
+      A._lose = best.control === "失去技能" ? { player, skill: best.skill } : null;
+      if (best.control === "取消" || best.value - refuse <= A.yubaMargin) return "取消";
+      return best.control;
+    },
+    // 【欲罢】失去哪个技能：账里挑好的那个给 20，别的按代价从低到高。
+    loseScore(player, skill) {
+      if (!player || lib.skill.xd_ai_core?.humanActing?.(player)) return undefined;
+      if (A._lose?.player === player && A._lose.skill === skill) return 20;
+      return 10 - A.loseCost(player, skill, Number(player.storage?.bolyuba_refuse) || 0);
+    }
+  };
+  return A;
+}
+
+
+
 // 玄蝶当前帖子版的8名旧将：直接复用本体未改动技能，只覆盖人物规格与发生变化的技能。
 // 使用本体原 character ID，避免同名复制；扩展开启时以本帖规则覆盖本体现行版本。
 function createXdLegacyPack() {
@@ -10505,14 +10750,8 @@ function createXdLegacyPack() {
       },
       // 往后的回合（打过折）一共算几个。
       horizon(player) {
-        const skill = lib.skill.xd_ai_goujian;
-        let T = Math.max(2, Math.min(5, game.players.length - 1));
-        if (player.hp <= 2) T--;
-        if (player.hp <= 1) T--;
-        T = Math.max(1, T);
-        let G = 0;
-        for (let t = 1; t <= T; t++) G += Math.pow(skill.V.gamma, t);
-        return G;
+        // 共用 xd_ai_core.horizon（同一个数）。
+        return lib.skill.xd_ai_core.horizon(player);
       },
       // 现在拿到牌有多要紧。
       nowFactor(player) {
@@ -11076,6 +11315,17 @@ function createXdLegacyPack() {
       // 他的一个回合值几张。现在人人 4.5；以后要按将算（出杀次数、技能产出），只改这里。
       turnValue(viewer, target) {
         return lib.skill.xd_ai_core.turn.value;
+      },
+      // 往后自己的回合（打过折）一共算几个：场上 n 人时约 n−1 个（2 到 5 个），自己 2 血以下少一个、1 血再少一个；
+      // 每个往后的回合打 0.85 折（总纲四·先机）。11-07 勾践【投醪】先用，11-08 挪到这里共用（桓温【行将】【欲罢】）。
+      horizon(player) {
+        let T = Math.max(2, Math.min(5, game.players.length - 1));
+        if (player.hp <= 2) T--;
+        if (player.hp <= 1) T--;
+        T = Math.max(1, T);
+        let G = 0;
+        for (let t = 1; t <= T; t++) G += Math.pow(0.85, t);
+        return G;
       },
       // 不怕乐的将（xd_ai_lebu.exempt：周公、蔡琰、屈原、孟达、吴苋，你 11-03、11-05）：乐拿不掉他们的出牌阶段。
       lebuCalm(target) {
@@ -16851,6 +17101,8 @@ function createXdLegacyPack() {
     lib.skill.xd_junce_ai = createXdJunceAi();
     // 虞姬【曲兴】【舞阑】的出牌规划（见 createXdYujiAi）。
     lib.skill.xd_yuji_ai = createXdYujiAi();
+    // 桓温【行将】【欲罢】的出牌规划（见 createXdHuanwenAi）。
+    lib.skill.xd_huanwen_ai = createXdHuanwenAi();
     // 记下每名角色出牌阶段结束时手里的牌（你 11-02 12:48，谢安记牌用）：熬过出牌阶段的牌，电脑多半是留着不用的闪、桃、无懈、杀。
     lib.skill.xd_buping_memo = {
       charlotte: true,
@@ -31298,6 +31550,10 @@ export default function () {
                           const num = get.event().num;
                           const skills = get.event().skills || [];
 
+                          // 电脑（含托管）照【欲罢】的账（createXdHuanwenAi.yuba）；玩家自己操作、或有负面技能可甩时照原来。
+                          const planned = lib.skill.xd_huanwen_ai?.yuba?.(player, num, !!get.event().canDiscard, skills);
+                          if (planned) return planned;
+
                           // 优先借机甩掉负面技能
                           if (skills.some(skill => {
                               const info = get.info(skill);
@@ -31364,6 +31620,9 @@ export default function () {
                           .set('ai', button => {
                               const skill = button.link;
                               const info = get.info(skill);
+                              // 电脑照【欲罢】的账挑（createXdHuanwenAi.loseScore）；玩家自己操作时照原来。
+                              const planned = lib.skill.xd_huanwen_ai?.loseScore?.(player, skill);
+                              if (typeof planned === 'number') return planned;
 
                               if (info?.ai?.neg || info?.ai?.halfneg) return 10;
 
@@ -31425,6 +31684,9 @@ export default function () {
 
               check(card) {
                   const player = get.event().player;
+                  // 电脑照【行将】规划挑牌（createXdHuanwenAi）；没有规划（或玩家自己操作）时照原来。
+                  const planned = lib.skill.xd_huanwen_ai?.pick?.(player, card);
+                  if (typeof planned === 'number') return planned;
 
                   // 规则允许扔任意多张，但正常情况下没有理由多扔，
                   // AI 选够两张以后就停止。
@@ -31478,6 +31740,15 @@ export default function () {
                               selectCard: -1,
 
                               prompt: `视为使用【${cardName}】`,
+
+                              // 电脑：每轮限一次，用不掉就浪费；和同名实体牌一样能用时先用技能、实体牌留着（先后比这张牌高 0.1）。
+                              // 别的电脑判断照这张牌（game.finishSkill 补上）。
+                              ai: {
+                                  order(item, player) {
+                                      const order = get.order({ name, isCard: true }, player);
+                                      return typeof order === 'number' && order > 0 ? order + 0.1 : order;
+                                  },
+                              },
                           };
 
                           game.finishSkill(skill);
@@ -31490,6 +31761,9 @@ export default function () {
 
               ai: {
                   order(item, player) {
+                      // 电脑（含托管）照【行将】规划：值得做时排在出牌最前，不值得（或牌名都已经有了）就不做；玩家自己操作时照原来。
+                      const planned = lib.skill.xd_huanwen_ai?.orderOf?.(player);
+                      if (typeof planned === 'number') return planned;
                       let cards = player.getCards('he', card => {
                           return ['basic', 'trick'].includes(get.type(card)) &&
                               player.getUseValue(card) > 0;
