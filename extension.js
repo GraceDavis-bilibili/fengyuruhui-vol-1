@@ -8809,9 +8809,9 @@ function createXdYujiAi() {
         case "jiu":
         case "shan":
           return 0;
-        // 回合末用无懈：没有可抵消的锦囊（本体会拿它去抵消“这个回合”本身），不这样放。
+        // 回合末用无懈：没有可抵消的锦囊，本体会拿它去抵消“这个回合”本身（回合结束后别的效果会被打断），绝不这样放。
         case "wuxie":
-          return -1;
+          return -Infinity;
         case "tiesuo":
           st.linked = !st.linked;
           return st.linked ? -0.3 : 0.3;
