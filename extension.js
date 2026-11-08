@@ -7045,7 +7045,10 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
 
                 const prompt = state.yin ? "发动【寐】：睁开一只眼？" : "发动【寐】：闭上一只眼？";
                 const agree = z.local(player) && !z.v2proto ? await z.yes(prompt) :
-                    (await player.chooseBool(prompt).set("ai", () => state.yin).forResult()).bool;
+                    (await player.chooseBool(prompt).set("ai", () => {
+                        const v = lib.skill.xd_zhuangzhou_ai?.meiWants?.(player, state);
+                        return typeof v === "boolean" ? v : state.yin;
+                    }).forResult()).bool;
 
                 if (!agree || state.lock || (state.yin ? state.closed === 0 : state.closed === 2)) return;
 
@@ -11199,6 +11202,358 @@ function createXdZhanghuaAi() {
         return typeof check === "function" ? check.apply(this, arguments) : 0;
       };
       info._xd_zhanghua = true;
+    }
+  };
+  return A;
+}
+
+
+
+// 庄周【寐】【梦】【醒】电脑出牌（11-08，你 11-07 12:56 "直接做"；11-02 12:23：电脑庄周要做，闭眼前的牌它可以记得）。
+// 只改电脑（含托管）的决定；技能文字、规则、玩家自己操作一律不动。牌值一律用扩展里已有的价目（xd_huanwen_ai.ctx / prices，一张新牌 W）。
+// 规则（照扩展的实现）：
+//   梦：至少睁着一只眼时，把一张明置手牌当它本身使用（基本牌、普通锦囊用完留在手里，翻成暗置），然后重铸所有与之同花色的明置牌
+//       并闭上双眼；没牌可重铸就“下次仅能发动【醒】”。
+//   醒：至少闭着一只眼时，先睁开双眼，把一张暗置手牌当它本身使用（用完留在手里，翻成明置），然后重铸所有与之同花色的暗置牌；
+//       一张都没重铸成就“下次仅能发动【梦】”。“下次仅能”期间寐和其他技能都用不了。装备、延时锦囊走梦/醒时实体牌照样离手。
+//   寐（转换技）：阳＝失去暗置牌后可以闭上一只眼；阴＝失去明置牌后可以睁开一只眼。
+// 本体电脑的毛病：寐在阳面一律不发动，所以电脑庄周从不闭眼——开局所有牌都是暗置、双眼睁着，梦（要明置牌）和醒（要闭着眼）
+//   都用不出来，整局等于没有技能；就算用得出来，梦/醒挑的是“牌值最低的那张”，常常是用不出去的牌。
+// 账（单位：张）：
+//   一张要用的牌走梦/醒，比直接用多留下这张牌（它的价），再加上重铸那几张（每张：新牌 W − 它的价；重铸掉桃这类好牌是亏的）。
+//   出牌阶段：本来就会用的牌（有正收益的目标、次数够），走得了梦/醒（明置走梦、暗置走醒，眼睛允许）、这笔账 > 0.2 就走，
+//     排在这张牌本来的先后上（同一张牌走梦/醒比直接用略靠前）。
+//   规则上同一张牌可以梦、醒来回用很多次（一张无中生有能一直摸到牌堆见底）；电脑每回合每张牌最多走一次梦/醒，免得一回合打不完。
+//   响应（杀来了用闪、濒死用桃或酒、无懈、借刀要杀）：走得了梦/醒、账 > 0.2 就走，牌留在手里；响应不限次数（次数由对方决定）。
+//   寐：保持一睁一闭（梦、醒都能发动，又不是全闭）：阳面在双眼都睁着时闭一只；阴面在双眼都闭着时睁一只；别的时候不发动。
+//   开局（双眼睁着、寐在阳面、没有能走梦的明置牌）：先直接用一张最便宜的、本来就要用的暗置牌，好让寐闭上一只眼，
+//     剩下的好牌再走醒留在手里。
+//   双眼都闭着时，电脑只用闭眼前手里就有的牌（你 11-02 12:23）；闭眼后才到手的牌要等睁眼再用（走醒也只挑记得的牌）。
+function createXdZhuangzhouAi() {
+  const A = {
+    margin: 0.2,
+    bump: 0.3,
+    respondOrder: 10,
+    bootOrder: 10,
+    num(v, d) {
+      return typeof v === "number" && Number.isFinite(v) ? v : d;
+    },
+    Z() {
+      return lib.xd_utils?.zhuangzhou;
+    },
+    H() {
+      return lib.skill.xd_huanwen_ai;
+    },
+    human(player) {
+      return !player || !!lib.skill.xd_ai_core?.humanActing?.(player);
+    },
+    state(player) {
+      return player?.storage?.xd_zhuangzhou_state || { closed: 0, yin: false, lock: null };
+    },
+    shown(card, player) {
+      try {
+        return !!lib.xd_utils.isShownHandCard(card, player);
+      } catch (e) {
+        return false;
+      }
+    },
+    // 这回合已经走过梦/醒的牌（每回合每张一次）。
+    used(player) {
+      try {
+        const h = player.getHistory();
+        if (h) return (h._xd_zz_ai_used ||= []);
+      } catch (e) {}
+      return [];
+    },
+    mark(player, card) {
+      const list = A.used(player);
+      if (card && !list.includes(card)) list.push(card);
+    },
+    // 当它本身使用的那张虚拟牌（同 Z.fact）。
+    vcard(card, player) {
+      const v = { name: get.name(card, player), suit: get.suit(card, player), number: get.number(card, player), isCard: true };
+      const nature = get.nature(card, player);
+      if (nature) v.nature = nature;
+      return v;
+    },
+    // 用完还留在手里（装备、延时锦囊要真的放进区域，留不下）。
+    stays(card, player) {
+      const t = get.type(card, null, false);
+      return t !== "equip" && t !== "delay";
+    },
+    // mode 现在能不能发动（眼睛、“下次仅能”）。
+    can(player, mode) {
+      const Z = A.Z();
+      if (!Z) return false;
+      const st = A.state(player);
+      if (mode === "awake" ? st.closed <= 0 : st.closed >= 2) return false;
+      try {
+        return !!Z.allowed(player, mode);
+      } catch (e) {
+        return false;
+      }
+    },
+    recastable(player, card) {
+      try {
+        if (typeof player.canRecast === "function" && !player.canRecast(card)) return false;
+        if (lib.filter.cardDiscardable && !lib.filter.cardDiscardable(card, player, "recast")) return false;
+      } catch (e) {}
+      return true;
+    },
+    // 走 mode 用 card 以后要重铸的牌：同花色、另一种明暗（这张自己已经翻过去了）。
+    recasts(player, mode, card) {
+      const suit = get.suit(card, player), wantShown = mode === "dream";
+      return player.getCards("h", c => c !== card && A.shown(c, player) === wantShown && get.suit(c, player) === suit && A.recastable(player, c));
+    },
+    // 这一问里这张虚拟牌能不能这样用。
+    legal(player, event, vc) {
+      try {
+        if (event.type === "phase") {
+          if (A.num(get.order(vc, player), 0) <= 0) return false;
+          return !!player.hasValueTarget(vc, null, true);
+        }
+        if (typeof event.filterCard !== "function") return false;
+        return !!event.filterCard(vc, player, event);
+      } catch (e) {
+        return false;
+      }
+    },
+    // 这一问里走 mode 的打算：{ card, gain, order }；不走返回 null。
+    plan(player, mode, event) {
+      if (!event || event.name !== "chooseToUse" || event.player !== player) return null;
+      if (!A.can(player, mode)) return null;
+      // 濒死的是敌人：不救，就不必亮出技能（托管时点了醒就算发动过了）。
+      if (event.type === "dying" && event.dying && event.dying !== player) {
+        let att = 0;
+        try {
+          att = get.attitude(player, event.dying);
+        } catch (e) {}
+        if (att <= 0) return null;
+      }
+      const phase = event.type === "phase";
+      const used = phase ? A.used(player) : [];
+      const hand = player.getCards("h");
+      // 双眼都闭着：只挑记得的牌（本体对技能挑的实体牌也查 cardEnabled2，同全局技能里那条）。
+      const st = A.state(player);
+      const seen = st.closed === 2 && Array.isArray(player._xd_zz_ai_seen) ? player._xd_zz_ai_seen : null;
+      const list = hand.filter(card => A.shown(card, player) === (mode === "dream") && !used.includes(card) && (!seen || seen.includes(card)));
+      if (!list.length) return null;
+      const c = A.H().ctx(player, hand), W = A.num(c.X?.W, 0.8);
+      const ymap = A.H().prices(c, hand);
+      const price = card => A.num(ymap.get(card), 0.6);
+      let best = null;
+      for (const card of list) {
+        const vc = A.vcard(card, player);
+        if (!A.legal(player, event, vc)) continue;
+        let gain = A.stays(card, player) ? price(card) : 0;
+        for (const x of A.recasts(player, mode, card)) gain += W - price(x);
+        if (gain <= A.margin) continue;
+        const order = phase ? A.num(get.order(vc, player), 0) : 0;
+        if (!best || order > best.order + 1e-9 || (Math.abs(order - best.order) <= 1e-9 && gain > best.gain)) best = { card, gain, order };
+      }
+      return best;
+    },
+    key(player, mode, event) {
+      const st = A.state(player);
+      return [
+        mode,
+        event?.type || "",
+        st.closed,
+        st.lock || "",
+        player.hp,
+        A.used(player).length,
+        player.getCards("he").map(card => card.cardid + (A.shown(card, player) ? "+" : "")).join()
+      ].join("|");
+    },
+    // 同一问、同一局面只算一次。
+    cache: typeof WeakMap === "function" ? new WeakMap() : null,
+    planOf(player, mode, event) {
+      event = event || _status.event;
+      if (!event || typeof event !== "object") return null;
+      const key = A.key(player, mode, event);
+      let box = A.cache?.get(event);
+      if (box?.player === player && box.key[mode] === key) return box.plan[mode];
+      let plan = null;
+      A._busy = (A._busy || 0) + 1;
+      try {
+        plan = A.plan(player, mode, event);
+      } catch (e) {
+        plan = null;
+      } finally {
+        A._busy--;
+      }
+      if (!box || box.player !== player) box = { player, key: {}, plan: {} };
+      box.key[mode] = key;
+      box.plan[mode] = plan;
+      A.cache?.set(event, box);
+      return plan;
+    },
+    // ---- 接到梦、醒上的钩子：返回 undefined 时照原来的写法（玩家自己操作时就是这样）----
+    // 电脑只在算过合算时才看得到梦/醒。
+    allows(mode, event, player) {
+      if (!player || A.human(player)) return undefined;
+      if (A._busy) return undefined;
+      return !!A.planOf(player, mode, event);
+    },
+    orderOf(mode, player) {
+      player = player || _status.event?.player;
+      if (!player || A.human(player)) return undefined;
+      if (A._busy) return 0;
+      const event = _status.event;
+      const plan = A.planOf(player, mode, event);
+      if (!plan) return 0;
+      return event?.type === "phase" ? plan.order + A.bump : A.respondOrder;
+    },
+    pick(mode, card) {
+      const player = _status.event?.player;
+      if (!player || A.human(player)) return undefined;
+      const plan = A.planOf(player, mode, _status.event);
+      if (!plan) return -1;
+      return card === plan.card ? 20 : -1;
+    },
+    // 寐：保持一睁一闭。
+    meiWants(player, state) {
+      if (!player || A.human(player)) return undefined;
+      const st = state || A.state(player);
+      return st.yin ? st.closed === 2 : st.closed === 0;
+    },
+    // 开局：双眼睁着、寐在阳面、没有“下次仅能”，梦没得走，出牌阶段本来就要用的暗置牌有两张以上——先直接用最便宜的那张。
+    bootCard(player) {
+      const st = A.state(player);
+      if (st.closed !== 0 || st.yin || st.lock) return null;
+      if (!A.has(player, "xd_mei") || !A.has(player, "xd_xing")) return null;
+      const event = _status.event;
+      if (!event || event.name !== "chooseToUse" || event.type !== "phase" || event.player !== player) return null;
+      const key = A.key(player, "boot", event);
+      if (player._xd_zz_ai_boot?.event === event && player._xd_zz_ai_boot.key === key) return player._xd_zz_ai_boot.card;
+      let card = null;
+      A._busy = (A._busy || 0) + 1;
+      try {
+        if (!A.plan(player, "dream", event)) {
+          const hand = player.getCards("h");
+          const usable = hand.filter(c => {
+            if (A.shown(c, player)) return false;
+            try {
+              return A.num(get.order(c, player), 0) > 0 && !!player.hasValueTarget(c, null, true);
+            } catch (e) {
+              return false;
+            }
+          });
+          if (usable.length >= 2) {
+            const ymap = A.H().prices(A.H().ctx(player, hand), hand);
+            const price = c => A.num(ymap.get(c), 0.6);
+            card = usable.sort((a, b) => price(a) - price(b))[0];
+          }
+        }
+      } catch (e) {
+        card = null;
+      } finally {
+        A._busy--;
+      }
+      player._xd_zz_ai_boot = { event, key, card };
+      return card;
+    },
+    has(player, skill) {
+      try {
+        return !!player.hasSkill(skill);
+      } catch (e) {
+        return false;
+      }
+    },
+    // 全局技能：闭眼时只用记得的牌；开局先用便宜牌闭一只眼。
+    globalSkill() {
+      return {
+        charlotte: true,
+        mod: {
+          cardEnabled2(card, player) {
+            const st = player?.storage?.xd_zhuangzhou_state;
+            if (!st || st.closed !== 2 || !Array.isArray(player._xd_zz_ai_seen)) return;
+            try {
+              if (A.human(player)) return;
+              if (get.itemtype(card) !== "card" || !player.getCards("h").includes(card)) return;
+            } catch (e) {
+              return;
+            }
+            if (!player._xd_zz_ai_seen.includes(card)) return false;
+          },
+          aiOrder(player, card, num) {
+            if (A._busy || typeof num !== "number" || num <= 0) return;
+            const st = player?.storage?.xd_zhuangzhou_state;
+            if (!st || st.closed !== 0 || st.yin || st.lock) return;
+            try {
+              if (get.itemtype(card) !== "card" || A.human(player)) return;
+              if (A.bootCard(player) === card) return num + A.bootOrder;
+            } catch (e) {}
+          }
+        }
+      };
+    },
+    install() {
+      const Z = A.Z();
+      for (const [id, mode] of [["xd_meng", "dream"], ["xd_xing", "awake"]]) {
+        const info = lib.skill[id];
+        if (!info || info._xd_zz_ai) continue;
+        const filter = info.filter;
+        if (typeof filter === "function") {
+          info.filter = function (event, player) {
+            const ok = filter.apply(this, arguments);
+            if (!ok) return ok;
+            try {
+              const v = lib.skill.xd_zhuangzhou_ai.allows(mode, event, player);
+              if (typeof v === "boolean") return v;
+            } catch (e) {}
+            return ok;
+          };
+        }
+        const onuse = info.onuse;
+        info.onuse = function (result, player) {
+          try {
+            const material = result?.cards?.[0];
+            if (material && result.card) lib.skill.xd_zhuangzhou_ai.mark(player, material);
+          } catch (e) {}
+          return typeof onuse === "function" ? onuse.apply(this, arguments) : undefined;
+        };
+        const check = info.check;
+        info.check = function (card) {
+          try {
+            const v = lib.skill.xd_zhuangzhou_ai.pick(mode, card);
+            if (typeof v === "number") return v;
+          } catch (e) {}
+          return typeof check === "function" ? check.apply(this, arguments) : 0;
+        };
+        info.ai ||= {};
+        const order = info.ai.order;
+        info.ai.order = function (item, player) {
+          try {
+            const v = lib.skill.xd_zhuangzhou_ai.orderOf(mode, player);
+            if (typeof v === "number") return v;
+          } catch (e) {}
+          return typeof order === "function" ? order.apply(this, arguments) : order;
+        };
+        info._xd_zz_ai = true;
+      }
+      // 闭上双眼那一刻记下手里的牌（电脑闭眼时只用这些）；睁开一只眼就不用记了。
+      if (Z && typeof Z.eyes === "function" && !Z.eyes._xd_zz_ai) {
+        const eyes = Z.eyes;
+        Z.eyes = function (player, count) {
+          let before = false;
+          try {
+            before = Z.blind(player);
+          } catch (e) {}
+          const r = eyes.apply(this, arguments);
+          try {
+            const after = Z.blind(player);
+            if (!before && after) player._xd_zz_ai_seen = player.getCards("h").slice();
+            else if (!after) delete player._xd_zz_ai_seen;
+          } catch (e) {}
+          return r;
+        };
+        Z.eyes._xd_zz_ai = true;
+      }
+      if (!lib.skill.xd_ai_zhuangzhou) {
+        lib.skill.xd_ai_zhuangzhou = A.globalSkill();
+        game.addGlobalSkill("xd_ai_zhuangzhou");
+      }
     }
   };
   return A;
@@ -20470,6 +20825,13 @@ export default function () {
       };
       // 安装庄周；先安装梦境包装，再叠加李斯的位置选择层。
       installXdZhuangzhou(lib, game, ui, get, ai, _status);
+      // 庄周【梦】【醒】【寐】的电脑出牌（见 createXdZhuangzhouAi）：庄周的技能这里才装好，所以钩子接在这里。
+      try {
+        lib.skill.xd_zhuangzhou_ai = createXdZhuangzhouAi();
+        lib.skill.xd_zhuangzhou_ai.install();
+      } catch (error) {
+        console.warn("庄周电脑出牌初始化失败", error);
+      }
 
       // 李斯【欺暗】：统一的“按真实位置选择别人牌”层。
       // 必须放在庄周对 Player 方法的兼容包装之后再安装，避免双方覆盖彼此。
