@@ -16396,7 +16396,8 @@ function createXdLegacyPack() {
     // 2. 这回合用得上才装：装上刚好够到最该打的敌人（装上以后够得着的敌人里最好打的那个，比现在够得着的都好打）；
     //    诸葛连弩这类加出杀次数的，这回合要连出两张以上的杀才装；−1 马让手里的顺手牵羊够到差一步、身上有牌的敌人也装。
     // 3. 手牌放不下（回合末要弃）：照常装（装上去不占手牌上限），但排在这回合别的牌后面，出完别的牌放得下了就不装。
-    // 4. 装上装备才赚的将（孙尚香【枭姬】、凌统【旋风】这类，本体标了 reverseEquip / noe）照常装；防具、+1 马、宝物不归这里管。
+    // 4. 装上装备才赚的将照常装：孙尚香【枭姬】、凌统【旋风】这类（本体标了 reverseEquip / noe），本扩展的荀淑【八龙】、
+    //    李牧【饲骄】、彭越【挠击】（equipPays）。防具、+1 马、宝物不归这里管；被技能当成别的牌用的（彭羕【侻失】）也不管。
     // 有自己整回合规划的将在 core.ownPlans 登记 "gear"，自己调 decide（韩信【神机】按他自己的出杀规矩算 shas）。
     lib.skill.xd_ai_gear = {
       charlotte: true,
@@ -16405,9 +16406,14 @@ function createXdLegacyPack() {
       priority: -1,
       margin: 0.1,
       lastOrder: 0.5,
+      // 用掉装备才赚的本扩展武将，和【枭姬】同一类，照常装：
+      // 荀淑【八龙】（锦囊要是手里唯一最多的一类，装备出手就少一张别的牌；他的八龙规划本来就是先出杀、装装备再吃桃）、
+      // 李牧【饲骄】（每用一张牌就离成长近一步，成长要用非基本牌）、彭越【挠击】（每用一张牌攻击范围、出杀次数、技能次数都 +0.1）。
+      equipPays: ["clanbalong", "xd_sijiao", "xd_naoji"],
       exempt(player) {
         try {
-          return !!(player.hasSkillTag("reverseEquip") || player.hasSkillTag("noe"));
+          if (player.hasSkillTag("reverseEquip") || player.hasSkillTag("noe")) return true;
+          return lib.skill.xd_ai_gear.equipPays.some(id => player.hasSkill(id));
         } catch (e) {
           return false;
         }
@@ -16489,6 +16495,8 @@ function createXdLegacyPack() {
         if (get.itemtype(card) !== "card") return null;
         const sub = get.subtype(card, false);
         if (sub !== "equip1" && sub !== "equip4") return null;
+        // 被技能当成别的牌用的不归这里管（如彭羕【侻失】：字母点数的武器、马视为酒或无中生有）。
+        if (get.subtype(card, player) !== sub) return null;
         if (get.position(card) !== "h" || skill.exempt(player)) return null;
         if (skill.needNow(event, player, card, shas ?? skill.shaPlan(player))) return "now";
         return player.countCards("h") <= player.getHandcardLimit() ? "hold" : "last";
