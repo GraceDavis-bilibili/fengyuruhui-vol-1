@@ -17883,6 +17883,8 @@ function createXdLegacyPack() {
         if (get.itemtype(card) !== "card") return base;
         const type = get.type(card, null, false);
         if (type !== "basic" && type !== "trick") {
+          // 你 11-08 16:53：手牌上限比手牌多出不少时，武器、−1 马先留在手里（holdGear）。
+          if (skill.holdGear(event, player, card)) return 0;
           const swap = skill.weaponSwap(player, card);
           if (swap) return swap > 0 ? Math.max(base, 1) + 200 : 0;
           // 第九条：内奸的乐、兵粮有值半张以上的目标才贴，没有就留着（弃牌时先弃）。
@@ -17913,6 +17915,34 @@ function createXdLegacyPack() {
       // 对自己用、不用挑目标的牌（第七条第 3 点）。
       selfUse(card, player) {
         return ["jiu", "tao", "wuzhong"].includes(get.name(card, player));
+      },
+      // 武器、−1 马先不装（你 11-08 16:53）：手牌上限比手牌多出不少（例：5 血 3 张）时，韩信本来就要大量的牌，
+      // 留在手里能把应对局面的牌藏在用不上的牌中间（当主公时反贼的拆、顺都冲他来），赌自己不被乐；
+      // 这一回合有进攻的机会、用得上它时再装（attackSoon）。手牌快到上限时照常装（装上去不占手牌上限）。
+      holdGear(event, player, card) {
+        const sub = get.subtype(card, false);
+        if (sub !== "equip1" && sub !== "equip4") return false;
+        if (player.countCards("h") > player.getHandcardLimit() - 1) return false;
+        try {
+          return !lib.skill.xd_shenji_ai.attackSoon(event, player, card);
+        } catch (e) {
+          return false;
+        }
+      },
+      // 这一回合用不用得上这件武器 / −1 马。
+      attackSoon(event, player, card) {
+        const skill = lib.skill.xd_shenji_ai, sub = get.subtype(card, false);
+        const foes = game.filterPlayer(target => skill.foe(player, target));
+        if (!foes.length) return false;
+        // −1 马：手里有顺手牵羊，有敌人差一步够不着（距离 2）、身上有牌可拿。
+        if (sub === "equip4" && player.getCards("hs").some(current => get.name(current, player) === "shunshou") &&
+            foes.some(target => get.distance(player, target) === 2 && target.countCards("hej") > 0)) return true;
+        // 这回合打得出普通的【杀】：还有次数、不缺杀（两张以上，你 10-24）、神机不把杀当成别的牌（没有“之”）。
+        if (!(player.getCardUsable("sha") > 0) || skill.countReal(player, "sha") < 2) return false;
+        if (lib.skill.xd_shenji.getNeedName(event, player)) return false;
+        // 武器：要打就装（加距离、加效果）；−1 马：有敌人现在够不着、减一就够得着才装。
+        if (sub === "equip1") return true;
+        return foes.some(target => !player.inRange(target) && get.distance(player, target) - 1 <= player.getAttackRange());
       },
       // 第七条第 4 点：手里这张武器要不要顶掉身上那把。1＝要换，-1＝不换，0＝不归这里管（照本体）。
       weaponSwap(player, card) {
