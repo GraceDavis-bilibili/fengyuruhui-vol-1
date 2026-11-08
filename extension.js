@@ -13220,6 +13220,12 @@ function createXdLegacyPack() {
     //   敌人还没连好 → 先用铁索连上（排到火攻前面）；
     //   敌人已经连好（至少两个敌人连着，自己人都没连着）→ 先用属性伤害引爆，手里多出来的铁索往后放、也不重铸，
     //   引爆以后敌人都解开了，再拿它重新连上。
+    // 没有能引爆的牌时（你 11-08 14:01）：连敌人只是“以后也许有人引爆”的那一份，下面两种时候这一份不值一张牌，重铸找新牌：
+    //   ① 已经有两个（或更多）不是自己人的连着：铁索已经布好，谁一引爆他们都要一起掉血，再连一个只多一个人跟着掉；
+    //   ② 手里没杀没闪、铁索只有这一张、别的牌现在也用不上：手牌太弱，最缺的是一张新牌。
+    // 这两种时候连新的人不算收益；连着的队友、自己照样先解开。
+    // 本体出牌先挑先后最大的：铁索（7.3）排在重铸（6）前面，试了没有好目标就被剔掉，这一轮就重铸不了了；
+    // 所以场上没有值得连、值得解开的人时（含上面两种），把铁索排到重铸后面，让本体先重铸它。
     lib.skill.xd_ai_tiesuo = {
       charlotte: true,
       silent: true,
@@ -13257,7 +13263,72 @@ function createXdLegacyPack() {
         if (!target?.isLinked() || !lib.skill.xd_ai_tiesuo.linkable(target)) return false;
         return target === player || get.attitude(player, target) > 0;
       },
-      hasGoodTarget(player, card) {
+      // 自己人（引爆会一起伤到、不想打的人）：内奸韩信只认主公（他自己的账）；别人照本体态度。
+      mate(player, target) {
+        if (!target || target === player) return true;
+        const nei = lib.skill.xd_shenji_ai;
+        try {
+          if (nei?.isNei?.(player) && player.hasSkill?.("xd_shenji")) return !!nei.ally(player, target);
+        } catch (e) {}
+        return get.attitude(player, target) > 0;
+      },
+      // 有没有能出的杀、闪（本体的算法：手里的牌、转化技能、八卦这类都算）。
+      hasName(player, name) {
+        try {
+          if (name === "sha" && typeof player.hasSha === "function") return !!player.hasSha();
+          if (name === "shan" && typeof player.hasShan === "function") return !!player.hasShan();
+        } catch (e) {}
+        return player.getCards("hs").some(card => get.name(card, player) === name);
+      },
+      // 这张牌现在用掉有没有赚头：共用的愿望表（xd_ai_core.wish）；没有愿望表时看本体有没有收益为正的目标。
+      usefulNow(player, card) {
+        const core = lib.skill.xd_ai_core;
+        try {
+          if (typeof core?.wish === "function") {
+            const v = Number(core.wish(player, card)?.v);
+            return Number.isFinite(v) && v > 0;
+          }
+        } catch (e) {}
+        try {
+          return !!player.hasValueTarget?.(card);
+        } catch (e) {
+          return false;
+        }
+      },
+      // 开头说的那两种时候（没有能引爆的牌，铁索已经布好、或者手牌太弱）：返回 true。按这次询问缓存。
+      spare(player) {
+        const skill = lib.skill.xd_ai_tiesuo, evt = _status.event;
+        const hand = player.getCards("hs");
+        const key = hand.map(card => card.cardid).join() + "|" + game.filterPlayer(current => current.isLinked()).map(current => current.playerid).join();
+        if (evt && evt._xd_tiesuo_spare?.key === key) return evt._xd_tiesuo_spare.value;
+        let value = false;
+        try {
+          const pool = game.filterPlayer(current => !skill.mate(player, current));
+          if (!skill.triggers(player, pool).length) {
+            if (pool.filter(current => current.isLinked()).length >= 2) value = true;
+            else {
+              const chains = hand.filter(card => get.name(card, player) === "tiesuo");
+              if (chains.length === 1 && !skill.hasName(player, "sha") && !skill.hasName(player, "shan")) {
+                value = hand.every(card => card === chains[0] || !skill.usefulNow(player, card));
+              }
+            }
+          }
+        } catch (e) {
+          value = false;
+        }
+        if (evt) evt._xd_tiesuo_spare = { key, value };
+        return value;
+      },
+      // 这张铁索该先重铸吗：照本体能重铸、没被拦、场上没有收益为正的目标（别的武将自己的打法给了正分时照他们的）。
+      recastFirst(player, card) {
+        const skill = lib.skill.xd_ai_tiesuo;
+        if (get.itemtype(card) !== "card" || skill.exempt(player, card) || skill.blockRecast(card, player)) return false;
+        if (typeof player.canRecast === "function" && !player.canRecast(card, null, true)) return false;
+        if (typeof player.hasValueTarget !== "function") return false;
+        return !player.hasValueTarget(card);
+      },
+      // friendsOnly：只看要解开的自己人。
+      hasGoodTarget(player, card, friendsOnly) {
         const skill = lib.skill.xd_ai_tiesuo;
         return game.hasPlayer(target => {
           try {
@@ -13265,7 +13336,7 @@ function createXdLegacyPack() {
           } catch (e) {
             return false;
           }
-          return skill.goodEnemy(player, target) || skill.goodFriend(player, target);
+          return (!friendsOnly && skill.goodEnemy(player, target)) || skill.goodFriend(player, target);
         });
       },
       // 出牌阶段的“重铸”（本体 _recasting）挑牌时拦下铁索。
@@ -13274,9 +13345,11 @@ function createXdLegacyPack() {
           const skill = lib.skill.xd_ai_tiesuo;
           if (!player || get.name(card, player) !== "tiesuo" || skill.human(player) || !skill.ownPhase(player)) return false;
           if (skill.exempt(player, card)) return false;
-          if (skill.hasGoodTarget(player, card)) return true;
           // 敌人已经连好、马上要用属性伤害引爆：引爆以后还要拿这张铁索再连上。
-          return skill.relinkPlan(player).step === "trigger";
+          if (skill.relinkPlan(player).step === "trigger") return true;
+          // 没有能引爆的牌、铁索已经布好或手牌太弱：连新的人不值一张牌，可以重铸；只有连着的自己人要解开时才留着用。
+          if (skill.spare(player)) return skill.hasGoodTarget(player, card, true);
+          return skill.hasGoodTarget(player, card);
         } catch (e) {
           return false;
         }
@@ -13334,6 +13407,8 @@ function createXdLegacyPack() {
             const step = skill.relinkPlan(player).step;
             if (step === "link") return Math.max(num, 9.5);
             if (step === "trigger") return Math.min(num, 1);
+            // 没有值得连、值得解开的人（含开头那两种时候）：排到重铸（6）后面，让本体先把它重铸掉。
+            if (skill.recastFirst(player, card)) return Math.min(num, 1);
           } catch (e) {
           } finally {
             skill._busy = false;
@@ -13349,6 +13424,8 @@ function createXdLegacyPack() {
             const skill = lib.skill.xd_ai_tiesuo;
             if (skill.human(player) || !skill.ownPhase(player) || skill.exempt(player)) return;
             if (target !== player && !target.isLinked() && get.attitude(player, target) < 0 && lib.skill.xd_ai_core.maixie(player, target)) return 0;
+            // 没有能引爆的牌、铁索已经布好或手牌太弱（你 11-08 14:01）：连新的人不算收益，重铸找新牌。
+            if (target !== player && !target.isLinked() && !skill.mate(player, target) && skill.spare(player)) return 0;
             if (current !== 0) return;
             if (skill.goodEnemy(player, target)) {
               let res = target.hasSkillTag("nofire") || target.hasSkillTag("nothunder") ? 0.45 : 0.9;
