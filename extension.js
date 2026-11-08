@@ -9366,6 +9366,368 @@ function createXdHuanwenAi() {
 
 
 
+// 彭羕【嚣翻】【侻失】电脑出牌（11-08，你 11-07 12:56 "直接做"）。只影响电脑（含托管）；技能文字、规则、玩家操作一律不动。
+// 牌值一律用扩展里已有的价目，不另立：手里每张牌的价同桓温（xd_huanwen_ai → 虞姬 xd_yuji_ai.costs：“留着值多少”和“现在用掉值多少”取大的；
+// 一张新牌 xd_yuji_ai.fresh；装备 xd_huanwen_ai.equipCost），杀价、拆价 xd_ai_goude，回血、身上的乐兵粮 xd_ai_core。
+// 1. 【嚣翻】（本体）：需要用牌时看牌堆底 X+1 张、用其中一张；这张结算完，按这回合用过几类牌（算上这张）依次弃判定区、装备区、手牌区。
+//    用一张牌堆底的牌值多少：现在用掉值多少（杀按还剩的杀次数、无中两张新牌、拆顺按场上最值的目标、桃按回血……）。
+//    有【寸目】时牌堆底就是他以后要摸的牌：用掉一张＝以后多摸一张新牌、少摸这一张（按它摸到手里的价）。
+//    代价：判定区（自己身上的乐、兵粮、闪电，弃掉是赚的）、装备区（按装备价）、手牌区（整手牌的价）。到第三类时无中摸的、顺来的
+//    也跟着被弃，只剩拆的那一下；第二类以后用出来的装备马上就被弃掉，不算赚。
+//    赚 0.3 张以上才用：出牌阶段排在最前；手里还有好牌、又到了第三类时不用，先把手牌打出去，手空了再连着用牌堆底。
+//    别人回合里要用闪、桃（或用杀）时：牌堆底有合用的就和手里那张比，省下手里那张更值就先用牌堆底的
+//    （这时多半只弃判定区，常常还顺手把身上的乐、兵粮弃掉）；手里没有合用的，就看弃掉的区域值不值。
+//    本体原来的写法：出牌阶段一律最先用（不管弃什么），只挑“现在用掉最值”的，第二类以后照样用装备（马上被弃）、
+//    第三类只是不用而已。
+// 2. 【侻失】（扩展）：字母牌阳面是酒、阴面是无中，用一张就翻面，下一张牌无距离次数限制。
+//    阳面手里有两张以上字母牌时，先拿一张当酒用掉（没有杀也用）：翻到阴面，下一张字母牌就是无中（摸两张），用完又翻回阳面。
+//    账：第二张字母牌当无中用掉（两张新牌）− 这两张字母牌当酒留着的价（血少时酒能自救，留着贵，就不翻）。
+//    刚用完字母牌（下一张无距离次数限制）时，杀排到最前：多出一张不算次数的杀，前面的酒也正好加在这张杀上（本体原版就这么排）。
+function createXdPengyangAi() {
+  const A = {
+    margin: 0.3,
+    // 本体嚣翻的先后（值得用时照这个排在最前）。
+    order: 12,
+    // 翻面那张酒排在字母无中（7＋3）前面一点：先翻面、马上摸牌。
+    flipOrder: 10.5,
+    // 别人要我们用牌、手里又没有合用的：能用出来值几张（挨一下杀、被锦囊打到大约这么多；濒死另算）。
+    need: 1.5,
+    dyingNeed: 5,
+    num(v, d) {
+      return typeof v === "number" && Number.isFinite(v) ? v : d;
+    },
+    H() {
+      return lib.skill.xd_huanwen_ai;
+    },
+    human(player) {
+      return !player || !!lib.skill.xd_ai_core?.humanActing?.(player);
+    },
+    // ---- 价目（同桓温）----
+    ctx(player, hand) {
+      return A.H().ctx(player, hand);
+    },
+    prices(c, cards) {
+      return A.H().prices(c, cards);
+    },
+    total(c, cards) {
+      return A.H().total(c, cards);
+    },
+    equipCost(player, card) {
+      return A.H().equipCost(player, card);
+    },
+    // ---- 嚣翻 ----
+    // 这回合用过的牌的类别（同本体 getNum 的算法）。
+    types(player) {
+      const list = [];
+      for (const evt of player.getHistory("useCard")) {
+        const t = get.type2(evt.card);
+        if (!list.includes(t)) list.push(t);
+      }
+      return list;
+    },
+    // 用了这张以后要弃前几个区域（判定、装备、手牌）。
+    areas(player, card) {
+      const list = A.types(player);
+      const t = get.type2(card);
+      if (!list.includes(t)) list.push(t);
+      return Math.min(3, list.length);
+    },
+    // 牌堆底这次能看的几张（本体在这次“需要用牌”开始时记在事件上）。
+    bottom(player, ev) {
+      if (Array.isArray(ev?.olxiaofan_cards)) return ev.olxiaofan_cards;
+      const n = A.types(player).length + 1;
+      return Array.from(ui.cardPile.childNodes).slice(-n).reverse();
+    },
+    fits(player, ev, card) {
+      try {
+        return !!ev.filterCard(card, player, ev);
+      } catch (e) {
+        return false;
+      }
+    },
+    // 弃掉前 n 个区域的代价（判定区的乐、兵粮、闪电弃掉是赚的）。
+    areaCost(player, n, c) {
+      const core = lib.skill.xd_ai_core;
+      let cost = 0;
+      if (n >= 1) {
+        for (const card of player.getCards("j")) {
+          let v = 0;
+          try {
+            v = Number(core.delayValue(player, player, card.viewAs || get.name(card, player))) || 0;
+          } catch (e) {}
+          cost -= v;
+        }
+      }
+      if (n >= 2) for (const card of player.getCards("e")) cost += A.equipCost(player, card);
+      if (n >= 3) cost += A.total(c, player.getCards("h"));
+      return cost;
+    },
+    // 场上打一刀最值多少（同虞姬规划的算法）。
+    shaBest(player, c) {
+      const goude = lib.skill.xd_ai_goude;
+      let best = 0;
+      if (!goude) return 0;
+      for (const target of game.filterPlayer(current => current !== player)) {
+        let ok = false;
+        try {
+          ok = player.canUse({ name: "sha", isCard: true }, target);
+        } catch (e) {}
+        if (ok) best = Math.max(best, A.num(goude.shaValue(player, target, c.X.side), 0));
+      }
+      return best;
+    },
+    // 拆（steal＝顺，顺来的牌留得住时再加半张）一张最值多少，含队友判定区的乐、兵粮（同虞姬规划的算法）。
+    chaiBest(player, c, steal, keepLoot) {
+      const core = lib.skill.xd_ai_core, goude = lib.skill.xd_ai_goude;
+      const name = steal ? "shunshou" : "guohe";
+      const loot = steal && keepLoot ? 0.5 * c.X.W : 0;
+      let best = 0;
+      for (const target of game.filterPlayer(current => current !== player)) {
+        let reach = false;
+        try {
+          reach = player.canUse({ name, isCard: true }, target);
+        } catch (e) {}
+        if (!reach) continue;
+        const w = c.X.side.get(target) ?? 0;
+        if (w > 0.3) {
+          for (const card of target.getCards("j")) {
+            let v = 0;
+            try {
+              v = w * core.delayValue(player, target, card.viewAs || get.name(card, target));
+            } catch (e) {}
+            best = Math.max(best, v + loot);
+          }
+        }
+        let n = 0;
+        try {
+          n = target.countDiscardableCards(player, "hej");
+        } catch (e) {}
+        if (n && goude) best = Math.max(best, A.num(goude.chaiValue(player, target, c.X.side), 0) + loot);
+      }
+      return best;
+    },
+    // 牌堆底这张现在用掉值多少（n：用完要弃前几个区域）。
+    useNow(player, card, n, c, hand) {
+      const core = lib.skill.xd_ai_core;
+      const name = get.name(card, player), type = get.type(card, null, false);
+      const W = c.X.W;
+      if (type === "equip") {
+        // 第二类以后：装上马上被弃。
+        if (n >= 2) return 0;
+        let gain = A.equipCost(player, card);
+        const sub = get.subtype(card, false);
+        for (const old of player.getCards("e", e => get.subtype(e, false) === sub)) gain -= A.equipCost(player, old);
+        return gain;
+      }
+      if (name === "sha") {
+        let left = 0;
+        try {
+          left = Number(player.getCardUsable("sha")) || 0;
+        } catch (e) {}
+        if (!(left > 0)) return 0;
+        const slots = Math.min(left, 2);
+        const own = hand.filter(x => get.name(x, player) === "sha").length;
+        // 手里的杀够打这回合剩下的次数：用牌堆底这张＝省下手里一张（第三类时手牌反正要弃，那就是实打一刀）。
+        if (own >= slots && n < 3) return A.total(c, hand.concat([card])) - A.total(c, hand);
+        return A.shaBest(player, c);
+      }
+      if (name === "wuzhong") return n >= 3 ? 0 : 2 * W * (1 - c.X.block);
+      if (name === "guohe") return A.chaiBest(player, c, false, false);
+      if (name === "shunshou") return A.chaiBest(player, c, true, n < 3);
+      if (name === "tao") return player.isDamaged() ? A.num(core.healValue(Math.max(1, player.hp)), 0) : 0;
+      if (name === "jiu") {
+        // 酒：手里有杀、还能出杀时，加在下一刀上。
+        let left = 0;
+        try {
+          left = Number(player.getCardUsable("sha")) || 0;
+        } catch (e) {}
+        const has = n < 3 && hand.some(x => get.name(x, player) === "sha");
+        return left > 0 && has ? 0.6 * A.shaBest(player, c) : 0;
+      }
+      if (name === "shandian") return 0;
+      let ok = false;
+      try {
+        ok = !!player.hasValueTarget?.(card);
+      } catch (e) {}
+      if (!ok) return 0;
+      return type === "trick" || type === "delay" ? 1 : 0.8;
+    },
+    // 用牌堆底这张比不用多赚几张。phase：自己出牌阶段（和手牌比的是“不用”）；否则是别人要我们用牌（和手里合用的那张比）。
+    net(player, ev, card, c, hand, phase) {
+      const n = A.areas(player, card);
+      const area = A.areaCost(player, n, c);
+      const m = A.total(c, hand.concat([card])) - A.total(c, hand);
+      const cunmu = player.hasSkill("nzry_cunmu") ? c.X.W - m : 0;
+      if (phase) return A.useNow(player, card, n, c, hand) + cunmu - area;
+      // 要用牌：手里有合用的，省下最便宜的那张；没有就是“能用出来”本身（濒死多得多）。
+      const own = player.getCards("hs", x => A.fits(player, ev, x));
+      let saved;
+      if (own.length) {
+        const price = A.prices(c, hand);
+        saved = Math.min(...own.map(x => (hand.includes(x) ? A.num(price.get(x), 0.6) : 0.3)));
+      } else saved = A.needOf(player, ev);
+      return saved + cunmu - area;
+    },
+    // 手里没有合用的牌时，能用出来值几张：濒死 5；挨杀要闪＝挨一下的价（1 血时按濒死）；别的 1.5。
+    needOf(player, ev) {
+      if (ev?.type === "dying") return A.dyingNeed;
+      if (ev?.type === "respondShan") {
+        if (player.hp <= 1) return A.dyingNeed;
+        try {
+          return Math.max(A.need, A.num(lib.skill.xd_ai_core.hpCost(player.hp), A.need));
+        } catch (e) {}
+      }
+      return A.need;
+    },
+    key(player, ev) {
+      return [
+        Number(game.phaseNumber) || 0,
+        A.bottom(player, ev).map(card => card.cardid).join(),
+        player.getCards("hejs").map(card => card.cardid).join(),
+        A.types(player).join(),
+        player.hp,
+        player.maxHp,
+        player.hasSkill("oltuishi_unlimit") ? 1 : 0,
+        player.storage?.oltuishi ? 1 : 0
+      ].join("|");
+    },
+    // 这次“需要用牌”时牌堆底最值的那张：{ card, value }（没有合用的返回 null）。同一局面只算一次（记在这次事件上）。
+    plan(player, ev) {
+      if (!ev) return null;
+      const key = A.key(player, ev);
+      if (ev._xd_pengyang?.key === key) return ev._xd_pengyang.plan;
+      let plan = null;
+      try {
+        const hand = player.getCards("h");
+        const c = A.ctx(player, hand);
+        const phase = ev.type === "phase";
+        for (const card of A.bottom(player, ev)) {
+          if (!A.fits(player, ev, card)) continue;
+          const value = A.net(player, ev, card, c, hand, phase);
+          if (!plan || value > plan.value) plan = { card, value };
+        }
+      } catch (e) {
+        plan = null;
+      }
+      ev._xd_pengyang = { key, plan };
+      return plan;
+    },
+    // 当前这次“需要用牌”的事件（出牌阶段或被要求用牌时 _status.event 就是它；挑牌时是它的上一层）。
+    useEvent(player) {
+      let ev = _status.event;
+      for (let i = 0; i < 3 && ev; i++) {
+        if (ev.name === "chooseToUse" && ev.player === player) return ev;
+        ev = ev.getParent?.();
+      }
+      return null;
+    },
+    // ---- 接到本体技能上的钩子：返回 undefined 时照本体原来的写法（玩家自己操作时就是这样）----
+    // 嚣翻 ai.order：牌堆底有赚 0.3 张以上的 → 12（排在最前）；否则 0（这次不用）。
+    orderOf(player) {
+      player = player || get.player?.() || _status.event?.player;
+      if (A.human(player)) return undefined;
+      const ev = A.useEvent(player);
+      if (!ev || !Array.isArray(ev.olxiaofan_cards)) return undefined;
+      const plan = A.plan(player, ev);
+      return plan && plan.value > A.margin ? A.order : 0;
+    },
+    // 嚣翻挑牌：每张按账给分，不赚的 0（这次不用）。
+    pick(player, card) {
+      if (A.human(player)) return undefined;
+      const ev = A.useEvent(player);
+      if (!ev) return undefined;
+      const plan = A.plan(player, ev);
+      if (!plan) return 0;
+      if (plan.card === card) return plan.value > A.margin ? 10 + plan.value : 0;
+      return 0;
+    },
+    install() {
+      const info = lib.skill.olxiaofan;
+      if (!info || info._xd_pengyang) return;
+      if (info.ai) {
+        const original = info.ai.order;
+        info.ai.order = function (item, player) {
+          try {
+            const v = lib.skill.xd_pengyang_ai.orderOf(player);
+            if (typeof v === "number") return v;
+          } catch (e) {}
+          return typeof original === "function" ? original.apply(this, arguments) : original;
+        };
+      }
+      const cb = info.chooseButton;
+      if (cb) {
+        const check = cb.check;
+        cb.check = function (button) {
+          try {
+            const v = lib.skill.xd_pengyang_ai.pick(get.player(), button?.link);
+            if (typeof v === "number") return v;
+          } catch (e) {}
+          return typeof check === "function" ? check.apply(this, arguments) : 1;
+        };
+      }
+      info._xd_pengyang = true;
+    },
+    // ---- 侻失 ----
+    letter(player, card) {
+      try {
+        return get.itemtype(card) === "card" && lib.skill.oltuishi.isLetter(card, player);
+      } catch (e) {
+        return false;
+      }
+    },
+    // 阳面先拿 card 当酒翻面，赚几张：第二张字母牌当无中用掉（两张新牌）− 这两张当酒留着的价。不能翻时 -Infinity。
+    flipGain(player, card) {
+      if (player.storage?.oltuishi) return -Infinity;
+      const hand = player.getCards("h");
+      if (!hand.includes(card)) return -Infinity;
+      const others = hand.filter(x => x !== card && A.letter(player, x));
+      if (!others.length) return -Infinity;
+      const key = [Number(game.phaseNumber) || 0, hand.map(x => x.cardid).join(), card.cardid, player.hp, player.maxHp].join("|");
+      if (player._xd_pengyang_flip?.key === key) return player._xd_pengyang_flip.value;
+      let value = -Infinity;
+      try {
+        const c = A.ctx(player, hand);
+        const price = A.prices(c, hand);
+        const second = Math.min(...others.map(x => A.num(price.get(x), 0.6)));
+        value = 2 * c.X.W * (1 - c.X.block) - A.num(price.get(card), 0.6) - second;
+      } catch (e) {
+        value = -Infinity;
+      }
+      player._xd_pengyang_flip = { key, value };
+      return value;
+    },
+    flipWorth(player, card) {
+      try {
+        return player.isPhaseUsing() && A.flipGain(player, card) > A.margin;
+      } catch (e) {
+        return false;
+      }
+    },
+    // 侻失 aiOrder：字母牌 +3（原来就有）；阳面值得翻面的那张酒排到 10.5；下一张无限制时杀 +9（本体原版）。
+    tuishiOrder(player, card, order) {
+      if (typeof order !== "number" || A.human(player)) return undefined;
+      if (A.letter(player, card)) {
+        let o = order + 3;
+        if (!player.storage?.oltuishi && A.flipWorth(player, card)) o = Math.max(o, A.flipOrder);
+        return o;
+      }
+      if (order > 0 && player.hasSkill("oltuishi_unlimit") && get.name(card, player) === "sha") return order + 9;
+      return undefined;
+    },
+    // 侻失 ai.effect：阳面值得翻面时，没有杀可加也照样用这张酒（给它一点正的收益，本体的酒只在有一刀可加时才用）。
+    tuishiEffect(card, player, target) {
+      if (!card || target !== player || A.human(player) || get.name(card, player) !== "jiu") return undefined;
+      const phys = get.itemtype(card) === "card" ? card : Array.isArray(card.cards) && card.cards.length === 1 ? card.cards[0] : null;
+      if (!phys || !A.letter(player, phys)) return undefined;
+      if (!A.flipWorth(player, phys)) return undefined;
+      return [1, 1];
+    }
+  };
+  return A;
+}
+
+
+
 // 玄蝶当前帖子版的8名旧将：直接复用本体未改动技能，只覆盖人物规格与发生变化的技能。
 // 使用本体原 character ID，避免同名复制；扩展开启时以本帖规则覆盖本体现行版本。
 function createXdLegacyPack() {
@@ -9626,7 +9988,18 @@ function createXdLegacyPack() {
           return lib.skill.oltuishi.expectedName(player);
         },
         aiOrder(player, card, order) {
+          // 电脑（含托管）照【侻失】规划排先后（createXdPengyangAi.tuishiOrder）；玩家自己操作时照原来。
+          const planned = lib.skill.xd_pengyang_ai?.tuishiOrder?.(player, card, order);
+          if (typeof planned === "number") return planned;
           if (get.itemtype(card) === "card" && lib.skill.oltuishi.isLetter(card, player)) return order + 3;
+        }
+      },
+      // 电脑：阳面手里有两张以上字母牌时，没有杀可加也拿一张当酒用掉翻面（createXdPengyangAi.tuishiEffect）。
+      ai: {
+        effect: {
+          player(card, player, target) {
+            return lib.skill.xd_pengyang_ai?.tuishiEffect?.(card, player, target);
+          }
         }
       },
       trigger: { player: "useCardAfter" },
@@ -17103,6 +17476,9 @@ function createXdLegacyPack() {
     lib.skill.xd_yuji_ai = createXdYujiAi();
     // 桓温【行将】【欲罢】的出牌规划（见 createXdHuanwenAi）。
     lib.skill.xd_huanwen_ai = createXdHuanwenAi();
+    // 彭羕【嚣翻】【侻失】的出牌规划（见 createXdPengyangAi）；嚣翻是本体技能，这里接上先后和挑牌。
+    lib.skill.xd_pengyang_ai = createXdPengyangAi();
+    lib.skill.xd_pengyang_ai.install();
     // 记下每名角色出牌阶段结束时手里的牌（你 11-02 12:48，谢安记牌用）：熬过出牌阶段的牌，电脑多半是留着不用的闪、桃、无懈、杀。
     lib.skill.xd_buping_memo = {
       charlotte: true,
