@@ -17086,6 +17086,9 @@ function createXdLegacyPack() {
               try {
                 base = skill.neiSave(player, dying) ? Math.max(base, 1) : 0;
               } catch (e) {}
+            } else if (dying && !(get.attitude(player, dying) > 0)) {
+              // 不救的人濒死：什么都不出。之当无中改成对自己用以后（你 11-08 15:32），烧牌不再被“目标是他”挡住，这里照原来不出。
+              base = 0;
             } else if (!(base > 0)) {
               // 第八条：本体不肯保自己人的顺手时改成愿意。
               const protect = skill.protectSnatch(event, player);
@@ -18020,6 +18023,57 @@ function createXdLegacyPack() {
         }
         return value;
       },
+      // 回合末手里没【杀】时，记录里的【桃】会锁住手里留着救人的真【桃】（你 11-08 15:32）：队友或自己濒死时
+      // 真桃只能当【无中生有】用（摸两张），桃在记录前面要先烧 1 张、在后面要先烧 2 张记录才失效；
+      // 真桃不够烧就救不了人，只能赌烧牌摸到的牌（桃在后时第一次烧完摸到杀还能当桃）。
+      // 返回这样锁住要扣的分（张）：每个可能濒死的人 × 救不成的机会 ×（他死了的损失 − 一张桃），减去烧牌多摸的牌。
+      taoLock(a, b, count, risk, hp) {
+        if (!risk || !a || !b || a === b || count("sha") > 0) return 0;
+        const pos = b === "tao" ? 2 : a === "tao" ? 1 : 0, real = count("tao");
+        if (!pos || !real || real > pos) return 0;
+        const skill = lib.skill.xd_shenji_ai, s = skill.freq("sha"), t = skill.freq("tao");
+        const miss = pos === 1 ? Math.pow(1 - t, 2) : Math.pow(1 - s, 2) * (real >= 2 ? Math.pow(1 - t, 4) : 1);
+        const part = (d, loss) => Math.max(0, miss * loss - d * skill.burnGain);
+        let cost = part(risk.mateD, risk.mateLoss);
+        // 自己濒死时【酒】也能用：记录的另一张是酒、或手里有真酒，就锁不住自己。
+        if ((pos === 2 ? a : b) !== "jiu" && !count("jiu")) {
+          const self = risk.self(hp);
+          cost += part(self.d, self.loss);
+        }
+        return cost;
+      },
+      // 被锁住时烧牌多摸的牌（两张减去救人时还要花掉的那张，约 1.5 张）。
+      burnGain: 1.5,
+      // 到下个自己回合前进濒死的机会：1 血一半、2 血两成、3 血 5%、更多 2%（体力含护甲）。
+      dyingOdds(h) {
+        return h <= 1 ? 0.5 : h === 2 ? 0.2 : h === 3 ? 0.05 : 0.02;
+      },
+      // taoLock 用的救人风险：队友（内奸只认主公）死了的损失按共用的价（主公死了主忠就输），自己按 ownDeath；减去一张桃。
+      rescueRisk(player) {
+        const skill = lib.skill.xd_shenji_ai, core = lib.skill.xd_ai_core;
+        const save = typeof core?.saveCost === "number" ? core.saveCost : 2.2;
+        const death = target => {
+          try {
+            const v = target === player ? core.ownDeath(player) : core.deathCost(player, target);
+            if (Number.isFinite(v)) return v;
+          } catch (e) {}
+          return 7 + 0.5 * target.countCards("he");
+        };
+        let mateD = 0, mateLoss = 0;
+        for (const current of game.filterPlayer(current => current !== player && skill.ally(player, current))) {
+          const d = skill.dyingOdds(current.hp + (current.hujia || 0));
+          mateD += d;
+          mateLoss += d * Math.max(0, death(current) - save);
+        }
+        const own = Math.max(0, death(player) - save);
+        return {
+          mateD, mateLoss,
+          self(hp) {
+            const d = skill.dyingOdds(hp + (player.hujia || 0));
+            return { d, loss: d * own };
+          }
+        };
+      },
       freqCache: {},
       // 整副牌里这种牌占多少（不分属性）。
       freq(name) {
@@ -18328,7 +18382,7 @@ function createXdLegacyPack() {
           return values[name];
         };
         // 回合末留牌的分：自己和要保的人都安全时【桃】排在最后，和实际弃牌（v420）一致。
-        const taoSpare = skill.taoSpare(player);
+        const taoSpare = skill.taoSpare(player), rescue = skill.rescueRisk(player);
         const keepOf = name => (taoSpare && name === "tao" ? 0.1 : skill.keepValue[name] ?? 0.6);
         // 这张牌留到回合末会不会被弃：比它更值得留（或一样）的其他牌已经占满手牌上限。
         const doomed = (st, i) => {
@@ -18348,7 +18402,9 @@ function createXdLegacyPack() {
           list.sort((x, y) => y - x);
           let sum = 0;
           for (let i = 0; i < Math.min(Math.max(0, st.hp + limitExtra), list.length); i++) sum += list[i];
-          return sum + skill.recordValue(st.a, st.b, name => countName(st, name));
+          const count = name => countName(st, name);
+          // 手里没杀时别让记录把留着救人的真桃锁住（你 11-08 15:32）。
+          return sum + skill.recordValue(st.a, st.b, count) - skill.taoLock(st.a, st.b, count, rescue, st.hp);
         };
         // 出一张真名为 names[i] 的牌：与 mod.cardname 一致，之本身变无中；之不是它时，杀变之；其余照原名。
         const step = (st, i) => {
@@ -38702,6 +38758,23 @@ export default function () {
                 const name = skill.getNeedName(chooseEvent, currentPlayer);
                 return !!name && card.name === name && !!currentPlayer.canUse({ name: "wuzhong", isCard: true }, currentPlayer, false);
               };
+              // 之当【无中生有】只能对自己用（你 11-08 15:32）：求桃询问把目标限定成濒死的人、借刀限定成要杀的人，
+              // 这些限定只管原来要用的那张牌，管不到神机变出的无中。
+              const originalFilterTarget = event.filterTarget;
+              if (typeof originalFilterTarget === "function") {
+                event.filterTarget = function (card, current, target) {
+                  const user = current || player;
+                  if (lib.skill.xd_shenji.isShenjiWuzhong(card, user)) return target === user && !!lib.filter.filterTarget.call(this, card, user, target);
+                  return originalFilterTarget.apply(this, arguments);
+                };
+              }
+            },
+            // 这张是不是神机把“之”变成的【无中生有】：一张实体手牌（不是真无中），现在被当成无中。
+            isShenjiWuzhong(card, player) {
+              if (!card || !player) return false;
+              const real = get.itemtype(card) === "card" ? card : Array.isArray(card.cards) && card.cards.length === 1 ? card.cards[0] : null;
+              if (get.itemtype(real) !== "card" || real.name === "wuzhong" || !lib.skill.xd_shenji.isShenjiCard(real, player)) return false;
+              return (real === card ? get.name(card, player) : card.name) === "wuzhong";
             },
             isUsable(name, event, player) {
               if (event?.name !== "chooseToUse" || typeof event.filterCard !== "function") return false;
