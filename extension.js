@@ -10511,6 +10511,367 @@ function createXdZhangzhiAi() {
 
 
 
+// 孟获【蛮王】【叛侵】电脑出牌（11-08，你 11-07 12:56 "直接做"）。蛮王、叛侵都是本体技能（SP孟获），只改电脑（含托管）的决定；
+// 技能文字、规则、玩家操作一律不动。牌值一律用扩展里已有的价目：留牌价 xd_ai_keep，一张新牌 W，装备 xd_huanwen_ai.equipCost，
+// 回血 xd_ai_core.healValue，南蛮 xd_ai_aoe（和别的电脑放南蛮同一本账）。
+// 规则（本体）：蛮王＝出牌阶段弃任意张牌，依次执行前几项（弃几张执行几项）：①获得叛侵 ②摸一张 ③回 1 血 ④摸两张并失去叛侵。
+// 叛侵＝出牌阶段、弃牌阶段结束时，可把这阶段弃的、还在弃牌堆的牌全部当一张南蛮用；张数不超过目标数时，执行并移除蛮王的最后一项
+// （第一次摸两张并失去叛侵，第二次回 1 血，第三次摸一张，第四次永久获得叛侵）。第一次以后叛侵就不会再失去。
+// 本体电脑的毛病：挑牌只看“7 − 已选张数 − 牌价”，不看弃几张执行几项，常常一次弃四五张：第四项把叛侵弄丢，南蛮放不出来；
+// 或者弃的张数超过目标数，移除不了选项。南蛮放不放只看有没有值得打的目标，不看队友挨不挨得起、移除选项值多少。
+// 账（单位：张）：这回合剩下的（出牌阶段结束时的南蛮、弃牌阶段）一起算：
+//   手里留得住的牌（弃牌阶段按手牌上限留最值钱的，超出的本来就要弃）+ 回的血 + 南蛮（xd_ai_aoe）
+//   + 移除选项带来的（摸两张／回 1 血／摸一张）− 移除的那一项以后用不了（回血那项 0.3，摸牌那项 0.1）。
+//   有叛侵时，弃牌阶段超出上限的牌也会变成一张南蛮。
+//   蛮王：试“弃 k 张”（手牌、装备各挑最便宜的几张），和不发动比，多赚 0.3 张以上才发动；一次一次算（发动完再算下一次）。
+//   叛侵：出牌阶段结束时按这回合剩下的账比用和不用；弃牌阶段结束时南蛮加上移除选项的，赚就用。
+function createXdMenghuoAi() {
+  const A = {
+    margin: 0.3,
+    order: 2,
+    lossHeal: 0.3,
+    lossDraw: 0.1,
+    // 南蛮会打死救不回来的队友（xd_ai_aoe 的 blocked）：不放。
+    blocked: -10,
+    maxK: 8,
+    // 一个出牌阶段最多发动几次（防万一的上限，正常打不到）。
+    maxUses: 6,
+    num(v, d) {
+      return typeof v === "number" && Number.isFinite(v) ? v : d;
+    },
+    H() {
+      return lib.skill.xd_huanwen_ai;
+    },
+    human(player) {
+      return !player || !!lib.skill.xd_ai_core?.humanActing?.(player);
+    },
+    marks(player) {
+      return player.countMark("spmanwang");
+    },
+    // 叛侵移除选项要他还有蛮王（本体也这样判断）。
+    manwang(player) {
+      try {
+        return !!player.hasSkill("spmanwang", null, null, false);
+      } catch (e) {
+        return false;
+      }
+    },
+    panqin(player) {
+      try {
+        return !!player.hasSkill("sppanqin");
+      } catch (e) {
+        return false;
+      }
+    },
+    // 他现在所在的 name 阶段（事件）；不在就 null。
+    phase(player, name) {
+      let evt = null;
+      try {
+        evt = _status.event?.getParent?.(name);
+      } catch (e) {}
+      return evt && evt.name === name && evt.player === player ? evt : null;
+    },
+    // 这个阶段里他弃的、还在弃牌堆的牌（同叛侵本身的算法）。
+    discarded(player, phase) {
+      const out = [];
+      if (!phase) return out;
+      try {
+        player.getHistory("lose", evt => {
+          if (evt.type !== "discard" || evt.getParent(phase.name) !== phase) return false;
+          for (const card of evt.cards2 || []) if (get.position(card, true) === "d" && !out.includes(card)) out.push(card);
+          return false;
+        });
+      } catch (e) {}
+      return out;
+    },
+    nanman(cards) {
+      try {
+        return get.autoViewAs({ name: "nanman" }, cards || []);
+      } catch (e) {
+        return { name: "nanman" };
+      }
+    },
+    targets(player, card) {
+      return game.countPlayer(current => {
+        if (current === player) return false;
+        try {
+          return player.canUse(card, current, false);
+        } catch (e) {
+          return false;
+        }
+      });
+    },
+    // 一张南蛮值多少（xd_ai_aoe，同别的电脑放南蛮）。
+    gain(player, card) {
+      const aoe = lib.skill.xd_ai_aoe;
+      if (typeof aoe?.compute !== "function") return 0;
+      aoe._busy = (aoe._busy || 0) + 1;
+      try {
+        const plan = aoe.compute(player, card, "nanman");
+        if (!plan) return 0;
+        if (plan.blocked) return A.blocked;
+        return A.num(typeof aoe.matesValue === "function" ? aoe.matesValue(player, "nanman", plan).value : plan.gain, 0);
+      } catch (e) {
+        return 0;
+      } finally {
+        aoe._busy--;
+      }
+    },
+    // 回 n 血（从 hp 回起，不超过上限）值几张。
+    heals(hp, n, maxHp) {
+      const core = lib.skill.xd_ai_core;
+      let v = 0;
+      for (let i = 0; i < n && hp + i < maxHp; i++) v += A.num(core.healValue(Math.max(1, hp + i)), 0);
+      return v;
+    },
+    // 弃牌阶段：手牌上限以内按价从高到低留，超出的弃掉。
+    keepSum(prices, L) {
+      const list = prices.slice().sort((a, b) => b - a);
+      let sum = 0;
+      for (let i = 0; i < Math.min(Math.max(0, L), list.length); i++) sum += list[i];
+      return sum;
+    },
+    // 叛侵移除最后一项（已经移除了 m 项）：m＝0 摸两张、失去叛侵；1 回 1 血；2 摸一张；3 永久获得叛侵。
+    step(m) {
+      return [
+        { draw: 2, heal: 0, lose: true, loss: 0 },
+        { draw: 0, heal: 1, loss: A.lossHeal },
+        { draw: 1, heal: 0, loss: A.lossDraw },
+        { draw: 0, heal: 0, gain: true, loss: 0 }
+      ][m] || null;
+    },
+    // 这回合剩下的值多少：出牌阶段结束时的南蛮（play：true 用、false 不用、不给就取大的）和弃牌阶段。
+    // st：{ prices（手牌的价，摸的牌按 W）, D（出牌阶段弃的、还在弃牌堆的张数）, has（有叛侵）, m, hp }
+    // env：{ G（一张南蛮的价）, T（目标数）, W, L0（现在的手牌上限）, hp0, maxHp, can（有蛮王） }
+    rest(st, env, play) {
+      const able = st.has && st.D > 0;
+      const choices = play === undefined ? [false, true] : [!!play];
+      let best = -Infinity;
+      for (const choice of choices) {
+        const use = choice && able;
+        const prices = st.prices.slice();
+        let has = st.has, m = st.m, hp = st.hp, v = 0;
+        if (use) {
+          v += env.G;
+          const s = st.D <= env.T && m < 4 && env.can ? A.step(m) : null;
+          if (s) {
+            m++;
+            for (let i = 0; i < s.draw; i++) prices.push(env.W);
+            v += A.heals(hp, s.heal, env.maxHp) - s.loss;
+            hp = Math.min(env.maxHp, hp + s.heal);
+            if (s.lose) has = false;
+            if (s.gain) has = true;
+          }
+        }
+        // 弃牌阶段：上限随体力变（大多数武将上限＝体力）；超出的牌有叛侵时当一张南蛮。
+        const L = env.L0 + hp - env.hp0;
+        const over = Math.max(0, prices.length - L);
+        v += A.keepSum(prices, L);
+        if (has && over > 0) {
+          let dv = env.G;
+          const s = over <= env.T && m < 4 && env.can ? A.step(m) : null;
+          if (s) dv += s.draw * env.W + A.heals(hp, s.heal, env.maxHp) - s.loss;
+          v += Math.max(0, dv);
+        }
+        if (v > best) best = v;
+      }
+      return best;
+    },
+    env(player, ctx, card) {
+      let L0 = player.hp;
+      try {
+        L0 = A.num(player.getHandcardLimit(), player.hp);
+      } catch (e) {}
+      return { G: A.gain(player, card), T: A.targets(player, card), W: A.num(ctx.X?.W, 0.8), L0, hp0: player.hp, maxHp: player.maxHp, can: A.manwang(player) };
+    },
+    keepPrices(player, hand, ctx) {
+      try {
+        return lib.skill.xd_ai_keep.values(player, hand, "use", ctx.threat);
+      } catch (e) {
+        return new Map();
+      }
+    },
+    uses(player) {
+      try {
+        return Number(player.getStat("skill").spmanwang) || 0;
+      } catch (e) {
+        return 0;
+      }
+    },
+    // 蛮王这一次：{ cards, value, k }；不发动时 null。
+    plan(player) {
+      const phase = A.phase(player, "phaseUse");
+      if (!phase || A.uses(player) >= A.maxUses) return null;
+      const can = card => {
+        try {
+          return lib.filter.cardDiscardable(card, player, "phaseUse") !== false;
+        } catch (e) {
+          return true;
+        }
+      };
+      const hand = player.getCards("h");
+      const handOk = hand.filter(can);
+      const equips = player.getCards("e").filter(can);
+      if (!handOk.length && !equips.length) return null;
+      const done = A.discarded(player, phase);
+      const ctx = A.H().ctx(player, hand);
+      // 出牌阶段里按“现在用掉／留着”较高的那个价（虞姬、桓温、荀淑、张芝同一套）：这阶段还用得上的牌不弃。
+      const kv = A.H().prices(ctx, hand);
+      const price = card => A.num(kv.get(card), 0.6);
+      const eqPrice = new Map(equips.map(card => [card, A.num(A.H().equipCost(player, card), 1)]));
+      handOk.sort((a, b) => price(a) - price(b));
+      equips.sort((a, b) => eqPrice.get(a) - eqPrice.get(b));
+      const env = A.env(player, ctx, A.nanman(done));
+      const m = A.marks(player), opts = Math.max(0, 4 - m), has = A.panqin(player);
+      const base = A.rest({ prices: hand.map(price), D: done.length, has, m, hp: player.hp }, env);
+      let best = null;
+      const maxK = Math.min(A.maxK, handOk.length + equips.length);
+      for (let k = 1; k <= maxK; k++) {
+        const n = Math.min(k, opts);
+        for (let j = Math.max(0, k - equips.length); j <= Math.min(k, handOk.length); j++) {
+          const fromHand = handOk.slice(0, j), fromEquip = equips.slice(0, k - j);
+          const left = hand.filter(card => !fromHand.includes(card)).map(price);
+          let v = -fromEquip.reduce((sum, card) => sum + eqPrice.get(card), 0);
+          let hp = player.hp, hasNow = has;
+          if (n >= 1) hasNow = true;
+          if (n >= 2) left.push(env.W);
+          if (n >= 3) {
+            v += A.heals(hp, 1, env.maxHp);
+            hp = Math.min(env.maxHp, hp + 1);
+          }
+          if (n >= 4) {
+            left.push(env.W, env.W);
+            hasNow = false;
+          }
+          v += A.rest({ prices: left, D: done.length + k, has: hasNow, m, hp }, env) - base;
+          if (!best || v > best.value) best = { cards: fromHand.concat(fromEquip), value: v, k };
+        }
+      }
+      return best && best.value > A.margin ? best : null;
+    },
+    key(player) {
+      const phase = A.phase(player, "phaseUse");
+      return [
+        Number(game.phaseNumber) || 0,
+        player.getCards("he").map(card => card.cardid).join(),
+        player.hp,
+        player.maxHp,
+        A.marks(player),
+        A.panqin(player) ? 1 : 0,
+        A.discarded(player, phase).length,
+        A.uses(player),
+        game.players.map(current => current.hp + ":" + current.countCards("he")).join()
+      ].join("|");
+    },
+    // 同一局面只算一次。
+    planOf(player) {
+      const key = A.key(player);
+      if (player._xd_menghuo?.key === key) return player._xd_menghuo.plan;
+      let plan = null;
+      A._busy = (A._busy || 0) + 1;
+      try {
+        plan = A.plan(player);
+      } catch (e) {
+        plan = null;
+      } finally {
+        A._busy--;
+      }
+      player._xd_menghuo = { key, plan };
+      return plan;
+    },
+    // 叛侵用不用：event＝出牌阶段或弃牌阶段（结束时）。
+    usePlan(player, event) {
+      const cards = A.discarded(player, event);
+      if (!cards.length) return false;
+      const hand = player.getCards("h");
+      const ctx = A.H().ctx(player, hand);
+      const env = A.env(player, ctx, A.nanman(cards));
+      const m = A.marks(player);
+      if (event.name === "phaseUse") {
+        const kv = A.keepPrices(player, hand, ctx);
+        const st = { prices: hand.map(card => A.num(kv.get(card), 0.6)), D: cards.length, has: true, m, hp: player.hp };
+        return A.rest(st, env, true) > A.rest(st, env, false);
+      }
+      const s = cards.length <= env.T && m < 4 && env.can ? A.step(m) : null;
+      let v = env.G;
+      if (s) v += s.draw * env.W + A.heals(player.hp, s.heal, player.maxHp) - s.loss;
+      return v > 0;
+    },
+    // ---- 接到本体技能上的钩子：返回 undefined 时照本体原来的写法（玩家自己操作时就是这样）----
+    orderOf(player) {
+      player = player || _status.event?.player;
+      if (!player || A.human(player)) return undefined;
+      if (A._busy) return 0;
+      return A.planOf(player) ? A.order : 0;
+    },
+    resultOf(player) {
+      if (!player || A.human(player)) return undefined;
+      if (A._busy) return 0;
+      return A.planOf(player) ? 1 : 0;
+    },
+    // 挑牌：规划里的牌给正分，别的 −1。
+    pick(player, card) {
+      if (!player || A.human(player)) return undefined;
+      const plan = A.planOf(player);
+      if (!plan) return -1;
+      const i = plan.cards.indexOf(card);
+      return i < 0 ? -1 : 20 - i;
+    },
+    useOf(player, event) {
+      if (!player || !event || A.human(player)) return undefined;
+      return A.usePlan(player, event);
+    },
+    install() {
+      const info = lib.skill.spmanwang;
+      if (!info || info._xd_menghuo) return;
+      if (info.ai) {
+        const order = info.ai.order;
+        info.ai.order = function (item, player) {
+          try {
+            const v = lib.skill.xd_menghuo_ai.orderOf(player);
+            if (typeof v === "number") return v;
+          } catch (e) {}
+          return typeof order === "function" ? order.apply(this, arguments) : order;
+        };
+        const result = info.ai.result;
+        if (result && typeof result === "object") {
+          const res = result.player;
+          result.player = function (player) {
+            try {
+              const v = lib.skill.xd_menghuo_ai.resultOf(player);
+              if (typeof v === "number") return v;
+            } catch (e) {}
+            return typeof res === "function" ? res.apply(this, arguments) : res;
+          };
+        }
+      }
+      const check = info.check;
+      info.check = function (card) {
+        try {
+          const v = lib.skill.xd_menghuo_ai.pick(_status.event?.player, card);
+          if (typeof v === "number") return v;
+        } catch (e) {}
+        return typeof check === "function" ? check.apply(this, arguments) : 0;
+      };
+      const pq = lib.skill.sppanqin;
+      if (pq) {
+        const pcheck = pq.check;
+        pq.check = function (event, player) {
+          try {
+            const v = lib.skill.xd_menghuo_ai.useOf(player, event);
+            if (typeof v === "boolean") return v;
+          } catch (e) {}
+          return typeof pcheck === "function" ? pcheck.apply(this, arguments) : true;
+        };
+      }
+      info._xd_menghuo = true;
+    }
+  };
+  return A;
+}
+
+
+
 // 玄蝶当前帖子版的8名旧将：直接复用本体未改动技能，只覆盖人物规格与发生变化的技能。
 // 使用本体原 character ID，避免同名复制；扩展开启时以本帖规则覆盖本体现行版本。
 function createXdLegacyPack() {
@@ -18279,6 +18640,9 @@ function createXdLegacyPack() {
     // 张芝【笔心】的出牌规划（见 createXdZhangzhiAi）；笔心、洗墨是本体技能，这里接上发动、先后和挑类别、牌名。
     lib.skill.xd_zhangzhi_ai = createXdZhangzhiAi();
     lib.skill.xd_zhangzhi_ai.install();
+    // 孟获【蛮王】【叛侵】的出牌规划（见 createXdMenghuoAi）；蛮王、叛侵是本体技能，这里接上先后、发不发动、挑牌和叛侵用不用。
+    lib.skill.xd_menghuo_ai = createXdMenghuoAi();
+    lib.skill.xd_menghuo_ai.install();
     // 记下每名角色出牌阶段结束时手里的牌（你 11-02 12:48，谢安记牌用）：熬过出牌阶段的牌，电脑多半是留着不用的闪、桃、无懈、杀。
     lib.skill.xd_buping_memo = {
       charlotte: true,
