@@ -41228,12 +41228,23 @@ export default function () {
               }
             },
             // 本体在建立询问前就筛选无懈/闪。这里只申报真能变出的牌，不改变使用/打出的规则。
-            canProvide(player, name) {
-              if (!['wuxie', 'shan'].includes(name)) return false;
+            canProvide(player, name, dying) {
+              if (!['wuxie', 'shan', 'tao', 'jiu'].includes(name)) return false;
+              const save = name === 'tao' || name === 'jiu';
+              if (save && get.itemtype(dying) !== 'player') return false;
               const skill = lib.skill.xd_shenji;
               const names = skill.getLastTwo(player);
               if (!names?.includes(name)) return false;
-              const request = {
+              // 求桃照本体的真询问算之（你 11-09 16:04）：能救这个人的牌（桃；救自己时酒也算），目标只能是濒死的人。
+              const request = save ? {
+                name: 'chooseToUse', player, type: 'dying', dying,
+                filterCard(card, current) {
+                  return lib.filter.cardSavable(card, current, dying) && lib.filter.cardEnabled(card, current, 'forceEnable');
+                },
+                filterTarget(card, current, target) {
+                  return target === dying;
+                }
+              } : {
                 name: 'chooseToUse', player,
                 filterCard(card, current) {
                   return get.name(card) === name && lib.filter.cardEnabled(card, current, 'forceEnable');
@@ -41257,8 +41268,17 @@ export default function () {
             },
             ai: {
               respondShan: true,
+              save: true,
               skillTagFilter(player, tag, arg) {
                 if (tag === 'respondShan') return arg === 'use' && lib.skill.xd_shenji.canProvide(player, 'shan');
+                // 求桃前本体用 save 标签筛人（canSave），arg 是濒死的人。
+                if (tag === 'save') {
+                  try {
+                    return ['tao', 'jiu'].some(name => lib.skill.xd_shenji.canProvide(player, name, arg));
+                  } catch (e) {
+                    return false;
+                  }
+                }
               }
             },
             mod: {
