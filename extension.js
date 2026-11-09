@@ -14119,7 +14119,32 @@ function createXdLegacyPack() {
       },
       maixie(player, target) {
         if (player.hasSkillTag("jueqing", false, target)) return false;
-        return !!(target.hasSkillTag("maixie") || target.hasSkillTag("maixie_hp"));
+        if (!(target.hasSkillTag("maixie") || target.hasSkillTag("maixie_hp"))) return false;
+        // 你 11-09 16:29：关键是他挨一下具体赚多少。赚的够得上 4 血掉一血的价（hpCost(4)＝1.5 张）才算乐意挨打的卖血将。
+        return lib.skill.xd_ai_core.maixieGain(target) >= 1.5;
+      },
+      // 卖血技能挨一点伤害能赚几张牌（期望，按牌算；回一血按 4 血的血价 1.5 算）。认不出的技能按 1.5（照旧当卖血将）。
+      // 恢拓：红色回一血（等于这下白挨）、黑色摸一张，各一半 → 0.5×1.5＋0.5×1＝1.25，不够；奸雄只拿走这一张牌 1；
+      // 遗计、节命摸两张给自己人 2；反馈、刚烈是从打他的人那边拿牌、扣血，一来一去 2；归心按场上人数。
+      maixieGain(target) {
+        const table = { huituo: 1.25, jianxiong: 1, zhiyu: 1, yiji: 2, jieming: 2, fankui: 2, ganglie: 2 };
+        let skills = [];
+        try {
+          skills = target.getSkills(null, false, false);
+        } catch (e) {}
+        let best = null;
+        for (const id of skills || []) {
+          let ai;
+          try {
+            ai = get.info(id)?.ai;
+          } catch (e) {}
+          if (!ai || !(ai.maixie || ai.maixie_hp)) continue;
+          let v;
+          if (/guixin/.test(id)) v = Math.max(1.5, game.countPlayer() - 1);
+          else v = table[id] ?? table[id.replace(/^[a-z]+_/, "")] ?? table[id.replace(/^(re|xin|new|sp|ol|dc|sb)/, "")] ?? 1.5;
+          if (best === null || v > best) best = v;
+        }
+        return best === null ? 1.5 : best;
       },
       // 藤甲、祸首、巨象、蛮裔这类：技能的 AI 说这张牌对他无效。返回 null＝有效；数字＝无效，另外他赚多少（巨象拿走这张南蛮）。
       immune(player, target, card) {
@@ -15610,7 +15635,8 @@ function createXdLegacyPack() {
           }
           const w = weights.get(target) || 0, h = core.hpOf(target);
           if (w < -0.3) {
-            if (row ? row.free : core.maixie(player, target) && h >= 2) return 0;
+            // 乐意挨打的卖血将不交杀，只是他自己那一份不算（你 11-09 16:29：不能看见卖血将就整张不放），别的敌人照算。
+            if (row ? row.free : core.maixie(player, target) && h >= 2) continue;
             foes.push({ target, w, r: rOf(row, target) });
           } else if (w > 0.3 && h <= 1 && rOf(row, target) < 0.95) return 0;
         }
