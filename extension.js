@@ -18300,7 +18300,7 @@ function createXdLegacyPack() {
           if (base > 0) {
             let veto = false;
             try {
-              veto = skill.tiesuoVeto(event, player);
+              veto = skill.tiesuoVeto(event, player) || skill.chaiVeto(event, player);
             } catch (e) {}
             return veto ? 0 : base;
           }
@@ -18335,6 +18335,27 @@ function createXdLegacyPack() {
         const group = [target].concat(others.filter(current => ally(current)));
         if (group.some(current => current.hp + (current.hujia || 0) <= 2)) return false;
         return !lib.skill.xd_ai_wuxie.boostedNature(player, ally);
+      },
+      // 敌人过拆自己人时挡不挡（你 11-09 15:54）：拆手牌是随机拆一张，多半是比无懈便宜的牌，拿一张无懈去换不划算。
+      // 只在这几种时候挡：装着关键装备（八卦、仁王、+1 马……，或本体看来贵的装备），拆掉武器、-1 马以后够不着敌人（guoheWorth），
+      // 或者他快没牌又血少（手牌 ≤ 1、体力 ≤ 2：剩的那张多半是保命牌）。返回 true＝不挡。
+      chaiVeto(event, player, ally) {
+        if (event?.type !== "wuxie") return false;
+        const info = event.info_map;
+        if (!info || (info.state ?? event.state) !== 1) return false;
+        const map = info._source || info;
+        if (map.isJudge || (map.card?.viewAs || map.card?.name) !== "guohe") return false;
+        const target = map.target, user = map.player;
+        ally ??= current => current === player || get.attitude(player, current) > 0;
+        if (!target || !user || !ally(target) || ally(user)) return false;
+        const skill = lib.skill.xd_ai_wuxie;
+        if (skill.guoheWorth(target, current => current !== target && !ally(current) && get.attitude(player, current) < 0)) return false;
+        try {
+          const hp = target.hp || 0;
+          if (target.getCards("e").some(card => get.value(card, target) > 3 + Math.min(5, hp))) return false;
+        } catch (e) {}
+        if (target.countCards("h") <= 1 && (target.hp ?? 9) <= 2) return false;
+        return true;
       },
       // 看得见敌人马上能打出加伤的属性杀：亮着的酒或者已经喝了酒，再加上亮着的火杀、雷杀或者装着朱雀羽扇（只看公开的牌）。
       boostedNature(player, ally) {
