@@ -20922,12 +20922,14 @@ function createXdLegacyPack() {
               kill = true;
             }
           }
+          // 你 11-09 17:30："没有真闪时留一个能印闪的记录，是无法进攻时才不得不采取的防御手段。能进攻，就一定要进攻，进攻是最好的防御。"
+          // 所以这条线只要真打了敌人（打得到人的杀、南蛮、万箭、决斗、火攻），就和留着能印闪的记录一样算守住了底线，谁好看各自的账。
+          if (guard && !kill && (as === "nanman" || as === "wanjian" || as === "juedou" || as === "huogong" || as === "sha" && hit?.target && hit.value > 0)) kill = true;
           // 斩杀线（底线的例外，见 guard）：这一步收得走一个 1 血的敌人。
           if (guard && !kill) {
             try {
               if (as === "sha") kill = !!hit.exception;
-              // 你 11-09 17:18：连放两张南蛮，敌人不交杀就掉血、交了杀就少了砍主公的杀——抽干敌人的杀本身就是防御，和留着能印闪的记录一样算底线。
-              else if (as === "nanman") kill = nmKill(st.nm + 1) || st.nm + 1 >= 2;
+              else if (as === "nanman") kill = nmKill(st.nm + 1);
               else if (as === "wanjian") kill = wjKill(st.wj + 1);
               else if (as === "juedou") kill = duelK(st.nm + st.du + 1, countName(st, "sha")).kill;
             } catch (e) {
