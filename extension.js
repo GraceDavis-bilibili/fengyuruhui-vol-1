@@ -20609,6 +20609,13 @@ function createXdLegacyPack() {
           } catch (e) {}
           return r && typeof r.value === "number" ? r.value : null;
         };
+        const usedAs = name => {
+          try {
+            return player.getHistory("useCard", evt => evt.card?.name === name).length;
+          } catch (e) {
+            return 0;
+          }
+        };
         const wjKill = k => (killCache["wj" + k] ??= game.filterPlayer(current => skill.foe(player, current) && hpOf(current) <= 1).some(target => {
           try {
             if (!player.canUse({ name: "wanjian", isCard: true }, target, false)) return false;
@@ -20919,7 +20926,8 @@ function createXdLegacyPack() {
           if (guard && !kill) {
             try {
               if (as === "sha") kill = !!hit.exception;
-              else if (as === "nanman") kill = nmKill(st.nm + 1);
+              // 你 11-09 17:18：连放两张南蛮，敌人不交杀就掉血、交了杀就少了砍主公的杀——抽干敌人的杀本身就是防御，和留着能印闪的记录一样算底线。
+              else if (as === "nanman") kill = nmKill(st.nm + 1) || st.nm + 1 >= 2;
               else if (as === "wanjian") kill = wjKill(st.wj + 1);
               else if (as === "juedou") kill = duelK(st.nm + st.du + 1, countName(st, "sha")).kill;
             } catch (e) {
@@ -21005,8 +21013,9 @@ function createXdLegacyPack() {
           jd: false,
           op: hxA() && !hxA().blocked && hxA().opened ? 1 : 0,
           fin: openDone,
-          nm: 0,
-          wj: 0,
+          // 这回合已经出过的南蛮、万箭也算进连印计数：重新规划时第二张还按第二张算（不然开头定好的连放走一步就变卦）。
+          nm: hx ? Math.min(8, usedAs("nanman")) : 0,
+          wj: hx ? Math.min(8, usedAs("wanjian")) : 0,
           du: 0,
           lk: 0,
           sh: hx && names.includes("shunshou") ? shunRoot() : -1,
