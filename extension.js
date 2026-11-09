@@ -20579,7 +20579,8 @@ function createXdLegacyPack() {
           if (hx && name === "tiesuo") return tsValue(st);
           if (name === "wuzhong") return 1.6;
           if (name === "tao") return st.hp <= 1 ? 3 : 2;
-          if (name === "jiu") return 0.3;
+          // 酒自己不算价（你 11-09 16:00）：加伤在后面那张杀的价里（1 + st.buff），当垫牌的价在后面的印里；后面什么都没有就别喝。
+          if (name === "jiu") return 0;
           // 五谷、借刀（Fable 11-09 设计第九、十节）：不是内奸时照所有电脑同一本账（xd_ai_wugu.gain、core.wishJiedao），不划算就不出。
           if (!nei && (name === "wugu" || name === "jiedao")) {
             if (!(name in values)) {
@@ -20751,6 +20752,9 @@ function createXdLegacyPack() {
           if (opening && (as === "jiu" || name === "sha" && (as === "nanman" || openSha))) return null;
           // 连垫两块（手册第六节第 2 条，不是内奸）：这回合那张普通杀刚出完（没有连弩）就喝酒，加伤用不上、记录两格都死，白费一块垫牌。
           if (hx && as === "jiu" && st.b === "sha" && !(st.sha > 0)) return null;
+          // 手里一张杀都没有就不喝酒（你 11-09 16:00）：酒只有两种用处——给下一张杀加伤、当垫牌换两张印，都要杀；
+          // 光为了换一换记录喝掉，回合外还能救自己的那张酒就白费了。
+          if (as === "jiu" && !(countName(st, "sha") > 0)) return null;
           // 缺杀不出杀。例外：这张【杀】留到回合末反正要被弃（你 10-26 04:39），或者已经喝过酒（酒不白喝，你 10-26 19:26），照常打出。
           if (as === "sha" && !st.buff && countName(st, "sha") < 2 && !sha(i).exception && !doomed(st, i)) return null;
           // 喝过酒的【杀】按两点伤害算；不是内奸时前面万箭逼过的闪、铁索连上的人也算进去（见 sha）。
