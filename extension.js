@@ -15587,9 +15587,11 @@ function createXdLegacyPack() {
       },
       // 南蛮当防御牌（第十二节第 2b 条，你 04:10）：敌人交出的杀，本来是下回合前要砍我的。敌人里没有乐意挨打的卖血将、
       // 挨这一下的队友都接得住（没有 1 血又看不出有杀的）时，每个够得着我的敌人：
-      // 他交出一张杀的机会 × 他会拿杀砍我的机会（同 xd_ai_keep.threatFrom：够不够得着、挑不挑我、乐）×
+      // 他交出一张杀的机会 × 他会拿杀砍我的机会（同 xd_ai_keep.threatFrom：够不够得着、挑不挑我、乐；认得出我时只在他认得出的敌人里挑）×
       // 他轮到时因此没杀可出的机会（他原本只有这一张、摸的两张里也没有；连弩这类出几张算几张，少一张就少挨一刀）×
-      // 我少挨一刀的价（手里有闪＝省下那张闪 1；没闪＝血价 × 他打得穿的机会）。
+      // 我少挨一刀的价（没闪＝血价 × 他打得穿的机会；手里有闪时看闪够不够挡别人冲我来的杀，见下面 price）。
+      // 《神机印牌手册》第八节（模拟：开局孤南蛮第一轮主公少掉约 0.4 血）：原来只算 0.21 张，校准到 0.6～0.7 张——
+      // 原来按"他在我们这边够得着的人里平分"、有闪就只省一张闪，两处都低估（开局反贼的杀都冲主公来，两个邻座反贼的杀一张闪挡不住）。
       defense(player, plan, dodge) {
         const core = lib.skill.xd_ai_core, keep = lib.skill.xd_ai_keep;
         if (typeof keep?.reach !== "function" || typeof keep.share !== "function") return 0;
@@ -15622,13 +15624,22 @@ function createXdLegacyPack() {
           }
         }
         const hp = core.hpOf(player), mx = core.maixie(player, player);
-        let out = 0;
+        // 他认得出我是敌人时，只在他认得出的敌人里挑（本体按态度挑杀的目标：开局还没亮身份的忠臣他不打，反贼的杀都冲主公来）；
+        // 还认不出我时照旧按我们这边够得着的人平分（他以后打谁要看亮出来的身份）。
+        const hostile = (source, target) => {
+          try {
+            return get.attitude(source, target) < 0;
+          } catch (e) {
+            return true;
+          }
+        };
+        const list = [];
         for (const { target, w, r } of foes) {
-          if (!(r > 0)) continue;
           const reach = keep.reach(target, player);
           if (!(reach > 0)) continue;
           const play = keep.judged(target, "lebu") && !core.lebuCalm(target) ? 1 - core.turn.hit : 1;
-          const aim = Math.min(1, -w) * play * reach * keep.share(target, player, side, "sha");
+          const pool = hostile(target, player) ? side.filter(current => current === player || hostile(target, current)) : side;
+          const aim = Math.min(1, -w) * play * reach * keep.share(target, player, pool, "sha");
           if (!(aim > 0)) continue;
           const f = keep.shaRate(target);
           const shown = core.known(player, target, "public").filter(item => get.name(item, target) === "sha").length;
@@ -15642,7 +15653,35 @@ function createXdLegacyPack() {
           }
           const draw = keep.judged(target, "bingliang") ? core.turn.draw * (1 - core.turn.hit) : core.turn.draw;
           const gone = keep.uses(target) > 1 ? 1 : (1 - more) * Math.pow(1 - f, draw);
-          const price = dodge ? 1 : keep.hitCost(player, hp, mx) * keep.shaThrough(target, player);
+          // 他轮到时冲我来的杀（期望张数）：现在手里有杀、或摸的两张里有杀 × 挑我 × 一回合出几次。
+          const come = aim * (1 - (1 - (r > 0 ? r : 0)) * Math.pow(1 - f, draw)) * keep.uses(target);
+          list.push({ target, r, aim, gone, come });
+        }
+        // 我少挨一刀的价：手里 s 张闪（没闪 s＝0），别人冲我来的杀（泊松分布）至少 s 张时闪已经被用掉，这一刀落在身上＝血价 ×
+        // 他打得穿的机会；闪还够时只省下一张闪（1）。
+        let s = 0;
+        if (dodge) {
+          s = 1;
+          try {
+            s = Math.max(1, player.countCards("hs", card => get.name(card, player) === "shan"));
+          } catch (e) {}
+        }
+        const total = list.reduce((sum, item) => sum + item.come, 0);
+        let out = 0;
+        for (const { target, r, aim, gone, come } of list) {
+          if (!(r > 0)) continue;
+          let over = 1;
+          if (s > 0) {
+            const lam = Math.max(0, total - come);
+            let term = Math.exp(-lam), cdf = term;
+            for (let i = 1; i < s; i++) {
+              term *= lam / i;
+              cdf += term;
+            }
+            over = Math.max(0, 1 - cdf);
+          }
+          const hit = keep.hitCost(player, hp, mx) * keep.shaThrough(target, player);
+          const price = over * hit + (1 - over) * (s > 0 ? 1 : hit);
           const v = r * aim * gone * price;
           if (Number.isFinite(v)) out += v;
         }
@@ -19771,7 +19810,8 @@ function createXdLegacyPack() {
       },
       // 不是内奸的韩信用顺、拆：挑最值的人（愿望表 core.wishTake，乘敌人不无懈的机会；一样值时挑手牌少的，好把同一个敌人越打越空，
       // 你 01:47）。过河拆桥是一换一（你 01:56）：只在拆敌人最后一张手牌、关键装备（八卦、贯石、连弩、仁王、+1 马，或拆了他就打不到
-      // 我们的武器、−1 马，同 xd_ai_wuxie）、队友头上的乐兵粮、或拆掉 1 血敌人的防具好接杀时才有价，否则价 0（只在要推记录时出）。
+      // 我们的武器、−1 马，同 xd_ai_wuxie）、队友头上的乐兵粮、或拆掉 1 血敌人的防具好接杀时才有价，否则价 0（平时拆留着，手册第二节；
+      // 只在底线要推记录时出：手里没有真闪也没有真无懈，手册第七节、你 01:56，见 makePhasePlan 的 useValue）。
       // 返回 { value, target }；一个能用的目标都没有时返回 null；愿望表不在（只有测试会这样）返回 undefined，照旧按本体估值。
       hxTakeBest(player, name) {
         const core = lib.skill.xd_ai_core, skill = lib.skill.xd_shenji_ai;
@@ -19947,7 +19987,9 @@ function createXdLegacyPack() {
       rebelPref(player, target) {
         return 0;
       },
-      shaInfo(player, dmg = 1, card) {
+      // opt（不是内奸的推演用）：pOf(target, p) 按这条线前面的万箭改他接不住闪的机会（手册第九节）；extra 是推演里假定这条线已经
+      // 用铁索连上的敌人（手册第五节第 6 条）。
+      shaInfo(player, dmg = 1, card, opt) {
         const skill = lib.skill.xd_shenji_ai, nei = skill.isNei(player), led = nei ? skill.neiLedger(player) : null;
         card ||= { name: 'sha', isCard: true };
         const nature = skill.linkedNature(card);
@@ -19958,12 +20000,12 @@ function createXdLegacyPack() {
           } catch (e) { continue; }
           // 第九条：红线上的忠臣不打。
           if (nei && skill.neiVeto(player, target, led, "hit", dmg)) continue;
-          const p = skill.missChance(player, target, 'shan');
-          const chain = nature && skill.isLinked(target) ? skill.chainValue(player, target, null, card, dmg) : 0;
+          const p = opt?.pOf ? opt.pOf(target, skill.missChance(player, target, 'shan')) : skill.missChance(player, target, 'shan');
+          const chain = nature && skill.isLinked(target, opt?.extra) ? skill.chainValue(player, target, opt?.extra || null, card, dmg) : 0;
           // 已知会把己方或须保住的主公传进濒死时，不靠“垫记录”的后续摸牌抵消。
           // 直接命中就已获胜的确定击杀例外：游戏先于传导结束。
           const winsFirst = target.hp + (target.hujia || 0) <= dmg && p === 1 && skill.rescueChance(player, target) === 0 && skill.endsGame(player, target);
-          if (!winsFirst && p > 0 && nature && skill.isLinked(target) && game.hasPlayer(current => current !== target &&
+          if (!winsFirst && p > 0 && nature && skill.isLinked(target, opt?.extra) && game.hasPlayer(current => current !== target &&
               (current === player || skill.ally(player, current)) && skill.isLinked(current) && current.hp + (current.hujia || 0) <= dmg &&
               skill.chainEffect(player, current, card, target) !== 0)) continue;
           // 第九条：内奸的这一下乘平衡账的权重；把反贼打到 1 血、自己收不了时扣掉白送主忠的三张。
@@ -20002,7 +20044,7 @@ function createXdLegacyPack() {
           try {
             opened = player.getHistory("useCard", evt => !!evt.card && get.name(evt.card, player) === "nanman").length > 0;
           } catch (e) {}
-          return { open: op.value, full, cred1: op.cred1 || 0, opened };
+          return { open: op.value, full, cred1: op.cred1 || 0, opened, kill: !!op.kill, rows: plan.rows };
         } catch (e) {
           return null;
         } finally {
@@ -20010,7 +20052,8 @@ function createXdLegacyPack() {
         }
       },
       // 群体锦囊（你 10-24 10:02）：不打死队友、受影响的敌人比队友多才开，返回收益；否则 null。
-      aoeValue(player, name) {
+      // pOf(target, p)（不是内奸的推演用）：同一回合第 k 张群伤按他剩下的杀／闪改接不住的机会（手册第九节）。
+      aoeValue(player, name, pOf) {
         const skill = lib.skill.xd_shenji_ai, card = { name, isCard: true };
         // 第九条：内奸按平衡账算（主公是唯一的队友，他挨的一下也扣）。
         if (skill.isNei(player)) return skill.neiAoe(player, name);
@@ -20041,7 +20084,7 @@ function createXdLegacyPack() {
             continue;
           }
           if (nei ? !(effect < 0) : att > 0 ? !(effect < 0) : !(effect > 0)) continue;
-          const p = skill.missChance(player, target, response);
+          const p = pOf ? pOf(target, skill.missChance(player, target, response)) : skill.missChance(player, target, response);
           if (att > 0) {
             if (p > 0 && target.hp + (target.hujia || 0) <= 1) {
               // 内奸：主公可能被打进濒死时，要有一张真【桃】能把他救回来（用掉的桃在推演里算，见 zhuRisk）。
@@ -20124,6 +20167,102 @@ function createXdLegacyPack() {
         }
         return { value, target: best };
       },
+      // 他手里 need（杀／闪）有几张（公开信息，和 core.respondChance、xd_ai_aoe.compute 同一个口径）：看得见的 K 张，加上看不见、
+      // 没推断过"不是 need"的 m 张各按牌堆比例；能把别的牌当 need 打出的技能，"不够"的机会打对折。
+      // 返回 k => 他接得住这回合第 k 张的机会：第一张就是 respondChance，第二张起按"至少 k 张"缩（手册第九节"第二张南蛮按敌人剩下的杀重算"）。
+      respondLadder(player, target, need, card) {
+        const core = lib.skill.xd_ai_core;
+        let r1 = 0;
+        try {
+          r1 = core.respondChance(player, target, need, card, "public");
+        } catch (e) {}
+        if (!(r1 > 0)) return () => 0;
+        let K = 0, m = 0, tag = false;
+        try {
+          K = core.known(player, target, "public").filter(item => {
+            const n = get.name(item, target);
+            return (n === need || n === "hufu" || (need === "sha" && n === "yuchanqian")) && lib.filter.cardRespondable(item, target);
+          }).length;
+          m = Math.max(0, core.unknown(player, target, "public") - core.notCount(player, target, need, "public"));
+          tag = !!target.hasSkillTag(need === "sha" ? "respondSha" : "respondShan", true, "respond", true);
+        } catch (e) {}
+        const f = core.freq[need] || 0.2, cache = {};
+        // 不到 k 张的机会：P(K + 二项(m, f) < k)。
+        const below = k => {
+          if (k in cache) return cache[k];
+          let p = 0;
+          if (k > K) {
+            let term = Math.pow(1 - f, m);
+            for (let i = 0; i < k - K && i <= m; i++) {
+              p += term;
+              term = ((term * (m - i)) / (i + 1)) * (f / (1 - f));
+            }
+          }
+          return (cache[k] = Math.min(1, p) * (tag ? 0.5 : 1));
+        };
+        const base = 1 - below(1);
+        return k => (k <= 1 ? r1 : base > 1e-9 ? (r1 * (1 - below(k))) / base : 0);
+      },
+      // 敌人看得出缺杀（手册第七节底线、第八节开局的例外，"敌人看得出缺杀（公开推断）"）：下回合前要行动的敌人（core.foeTurns）现在手里
+      // 有杀的机会（公开信息：明置的牌，被南蛮、决斗点到没出杀记成"不是杀"的牌，手牌数；同 respondChance）按行动机会平均不到 0.3。
+      // 第一轮主公第一个行动、谁也还没出过牌，敌人各 4 张看不见的牌（各 0.73），所以开局第一回合实际成立不了（除非技能明置了牌）。
+      shaPoor(player) {
+        const core = lib.skill.xd_ai_core, card = { name: "nanman", isCard: true };
+        let sum = 0, act = 0;
+        for (const { p, act: a } of core.foeTurns(player)) {
+          let r = 1;
+          try {
+            r = core.respondChance(player, p, "sha", card, "public");
+          } catch (e) {}
+          sum += a * (Number.isFinite(r) ? r : 1);
+          act += a;
+        }
+        return act > 0 && sum / act <= 0.3;
+      },
+      // 敌人看得出缺杀（shaPoor）时的印刷价参数（手册第七节底线的例外"按价比"）：被要闪的期望次数按他们轮到时手里有杀的机会缩——
+      // 现在的手牌按公开推断（respondChance），再加摸的两张；身份表（core.requests）是按平常的手牌（四张加摸的两张）定的。
+      poorCtx(player, ctx) {
+        const core = lib.skill.xd_ai_core, card = { name: "nanman", isCard: true }, f = core.freq.sha || 0.28;
+        const draw = Math.pow(1 - f, core.turn?.draw ?? 2), usual = 1 - Math.pow(1 - f, 4) * draw;
+        let sum = 0, act = 0;
+        for (const { p, act: a } of core.foeTurns(player)) {
+          let r = 1;
+          try {
+            r = core.respondChance(player, p, "sha", card, "public");
+          } catch (e) {}
+          if (!Number.isFinite(r)) r = 1;
+          sum += a * (1 - (1 - r) * draw);
+          act += a;
+        }
+        if (!(act > 0) || !(usual > 0) || !ctx?.E) return ctx;
+        const k = Math.min(1, sum / act / usual);
+        return Object.assign({}, ctx, { E: Object.assign({}, ctx.E, { shan: (ctx.E.shan || 0) * k }) });
+      },
+      // 斩杀线（手册第七节底线、第八节开局的例外；第十二节第 2 条"有 1 血敌人，南蛮进了斩杀线"）：这回合收得走一个 1 血的敌人——
+      // 南蛮：同 xd_ai_aoe.opener 的 kill（他接不住的那一份值一张以上），这回合能出两张南蛮时按"两张里接不住一张"算
+      //   （他只有一张杀时第一张用杀接、第二张收走）；
+      // 杀：普通杀够得着、多半是反贼、救不太起来（shaInfo 的 exception）。
+      // A：hxAoe 的结果（带 rows）；n：这回合大概能出几张南蛮（0、1、2）；shaGroups：手里每组杀的一张（看 exception）。
+      killLine(player, A, n, shaGroups, dmg) {
+        const skill = lib.skill.xd_shenji_ai, core = lib.skill.xd_ai_core;
+        if (A && !A.blocked && A.rows && n > 0) {
+          if (A.kill) return true;
+          const card = { name: "nanman", isCard: true };
+          for (const row of A.rows.values()) {
+            if (!(row.w < -0.3) || row.immune || row.harvest || row.free || typeof row.hit !== "number" || core.hpOf(row.target) > 1) continue;
+            const ladder = skill.respondLadder(player, row.target, "sha", card);
+            if ((1 - ladder(n)) * row.hit >= 1) return true;
+          }
+        }
+        if (player.getCardUsable("sha") > 0) {
+          for (const card of shaGroups || []) {
+            try {
+              if (skill.shaInfo(player, dmg, skill.attackCard(card)).exception) return true;
+            } catch (e) {}
+          }
+        }
+        return false;
+      },
       makePhasePlan(event, player, cards, history, excluded, original, probe) {
         const shenji = lib.skill.xd_shenji, skill = lib.skill.xd_shenji_ai;
         const checked = fn => {
@@ -20151,12 +20290,14 @@ function createXdLegacyPack() {
         const canBurn = checked(() => !!player.canUse({ name: "wuzhong", isCard: true }, player, false));
         const maxHp = player.maxHp, limitExtra = player.getHandcardLimit() - player.hp;
         const taoOk = !player.isDamaged() || isUsable("tao");
-        // 推演中会变的只有：本回合还能出几次【杀】、【酒】，体力（【桃】）。其余牌能不能用按现在算。
+        // 推演中会变的：本回合还能出几次【杀】、【酒】，体力（【桃】），借刀缴完最后一把刀（jd），顺光了距离 1 以内的牌
+        // （sh，不是内奸；手册第十节第 1 条：顺光了变死名字＝垫牌）。其余牌能不能用按现在算。
         const usable = (name, st) => {
           if (name === "sha") return st.sha > 0;
           if (name === "jiu") return st.jiu > 0;
           if (name === "tao") return taoOk && st.hp < maxHp;
           if (name === "jiedao" && st.jd) return false;
+          if (name === "shunshou" && st.sh === 0) return false;
           return isUsable(name);
         };
         const zhiOf = (a, b, st) => {
@@ -20175,7 +20316,15 @@ function createXdLegacyPack() {
         const countName = (st, name) => names.reduce((sum, n, i) => sum + (n === name ? st.counts[i] : 0), 0);
         let chainCache;
         const shaCache = {};
-        const sha = (i, dmg = 1) => (shaCache[i + ':' + dmg] ??= skill.shaInfo(player, dmg, skill.attackCard(groups[i][0])));
+        // 不是内奸：wj＝这条线前面出过几张万箭（他剩下的闪，手册第九节）；lk＝这条线用铁索假定连上了几个敌人（手册第五节第 6 条）。
+        const sha = (i, dmg = 1, wj = 0, lk = 0) => {
+          const key = i + ':' + dmg + (wj || lk ? ':' + wj + ':' + lk : '');
+          if (!(key in shaCache)) {
+            const opt = wj || lk ? { pOf: wj ? (t, p) => 1 - (1 - p) * ladderRatio(t, "shan", wj + 1) : null, extra: lk ? linkPool().slice(0, lk) : null } : undefined;
+            shaCache[key] = skill.shaInfo(player, dmg, skill.attackCard(groups[i][0]), opt);
+          }
+          return shaCache[key];
+        };
         const nei = skill.isNei(player), zhuRisks = {};
         // 不是内奸（主公／忠臣／反贼）：印刷价、掩护的账（设计第一、二节），整次规划算一遍。
         const hx = nei ? null : skill.hxCtx(player, cards);
@@ -20209,7 +20358,204 @@ function createXdLegacyPack() {
         };
         const jdDisarm = () => !nei && !!jdPlan() && jdPlan().pSlash < 0.5;
         const jdLast = () => jdDisarm() && !!jdPlan().last;
+        // 主公韩信的第一回合（手册第八节，你 11-09 09:49 问开局南蛮放还是攒；模拟：开局只放这一张真南蛮、当最后一张即时牌、杀全留着，
+        // 主公三轮内阵亡最低）："种一张、攒其余"。身份局、主公、第一轮、这回合之前没用过即时牌时：
+        //   不喝酒（不当隔板）；手里有真南蛮（或这回合已经放了）时一张杀也不用（不打人、不印、不烧），南蛮是这回合最后一张即时牌，
+        //   放了以后什么即时牌都不出（第二张真南蛮攒着，第十二节）；无中、顺这些照常按价在南蛮之前出。
+        // 例外（手册第八节）：斩杀线（killLine）；敌人看得出缺杀（shaPoor，开局第一回合实际成立不了，见那里）。
+        let opening = false, openSha = false, openDone = false;
+        try {
+          if (!nei && get.mode() === "identity" && player === game.zhu && (game.roundNumber || 0) <= 1 &&
+              player.getAllHistory("useCard", shenji.filter).length === player.getHistory("useCard", shenji.filter).length) {
+            const usedNanman = player.getHistory("useCard", evt => !!evt.card && get.name(evt.card, player) === "nanman").length > 0;
+            const realNanman = names.reduce((t, n, i) => t + (n === "nanman" ? counts[i] : 0), 0);
+            const realSha = names.reduce((t, n, i) => t + (n === "sha" ? counts[i] : 0), 0);
+            const hasJiu = names.includes("jiu");
+            const recNanman = history.slice(-2).includes("nanman");
+            const reach = realNanman >= 1 || recNanman && realSha >= 1 ? (realNanman >= 2 || (realNanman >= 1 || recNanman) && realNanman + realSha + (hasJiu ? 1 : 0) + (recNanman ? 1 : 0) >= 3 ? 2 : 1) : 0;
+            const shaGroups = groups.filter((g, i) => names[i] === "sha").map(g => g[0]);
+            const exempt = skill.killLine(player, hxA(), reach, shaGroups, 1 + (player.hasSkill("jiu") ? 1 : 0)) || skill.shaPoor(player);
+            if (!exempt) {
+              opening = true;
+              openSha = realNanman > 0 || usedNanman;
+              openDone = usedNanman;
+            }
+          }
+        } catch (e) {}
+        // 底线（手册第七节，决定 2）：手里没有真闪也没有真无懈时，回合末先保住能印闪或无懈的记录（两格不同名、有一格是闪／无懈，
+        // 手里还留着杀），种子和连印都排在后面（guard）；例外只有斩杀线（这条线收得走人，见 step 的 kill）、敌人看得出缺杀（poor）。
+        // 有真闪或真无懈时放开按价比。敌人看得出缺杀时被要闪的次数按他们轮到时手里有杀的机会缩（poorCtx），记录价也不再按
+        // "一定挨一刀"保底（recordValue 是你 10-24 06:40 的老底线，见 hxEnd 的 pval）。
+        let guard = false, poor = false;
+        if (hx) {
+          try {
+            poor = skill.shaPoor(player);
+          } catch (e) {}
+          try {
+            guard = !poor && !(skill.countReal(player, "shan") + skill.countReal(player, "wuxie") > 0);
+          } catch (e) {}
+          if (poor) {
+            try {
+              hx.pctx = skill.poorCtx(player, hx.pctx);
+            } catch (e) {}
+          }
+        }
+        // ===== 连印的推演（手册第九、十节，不是内奸）=====
+        const aiCore = lib.skill.xd_ai_core;
+        // 体力（含护甲）：共用层不在时（只有测试会这样）按 hp＋护甲。
+        const hpOf = target => {
+          try {
+            return aiCore.hpOf(target);
+          } catch (e) {
+            return (target.hp || 0) + (target.hujia || 0);
+          }
+        };
+        // 他接得住这回合第 k 次要杀／闪的机会（respondLadder，按人记一遍）；ladderRatio＝第 k 次比第一次（本体的机会）缩多少。
+        const ladders = { sha: new Map(), shan: new Map() };
+        const ladderRatio = (target, need, k) => {
+          const map = ladders[need];
+          if (!map.has(target)) {
+            let fn = () => 0;
+            try {
+              fn = skill.respondLadder(player, target, need, { name: need === "sha" ? "nanman" : "wanjian", isCard: true });
+            } catch (e) {}
+            map.set(target, fn);
+          }
+          const lad = map.get(target), r1 = lad(1);
+          return r1 > 1e-9 ? Math.min(1, lad(k) / r1) : 0;
+        };
+        // 这条线里第 k 张南蛮（k≥2）：第一张照先手的账（open／full），后面每张按每个人剩下的杀重算（compute 的每行账，r 换成第 k 次
+        // 接得住的机会，敌人被逼光了杀就是稳掉血）；1 血、第一张稳接得住的队友第 k 张可能接不住时不放（红线，同 compute）。null＝不放。
+        const nmCache = {};
+        const nmK = k => {
+          if (k in nmCache) return nmCache[k];
+          const A = hxA();
+          let v = A.full;
+          for (const row of A.rows.values()) {
+            if (row.immune || row.harvest || row.free || typeof row.r !== "number" || typeof row.hit !== "number" || typeof row.c !== "number" || typeof row.loss !== "number") continue;
+            const rk = row.r > 0 ? row.r * ladderRatio(row.target, "sha", k) : 0;
+            if (row.w > 0.3 && hpOf(row.target) <= 1 && row.r >= 0.95 && rk < 0.95) return (nmCache[k] = null);
+            v += -row.w * (rk * row.c + (1 - rk) * row.hit - row.loss);
+          }
+          return (nmCache[k] = v);
+        };
+        // 斩杀线（同 opener 的 kill）：第 k 张南蛮时 1 血的敌人接不住的那一份值一张以上。按 k 记一遍（推演的每个节点都会问）。
+        const killCache = {};
+        const nmKill = k => {
+          if (("nm" + k) in killCache) return killCache["nm" + k];
+          const A = hxA();
+          let kill = false;
+          if (A && !A.blocked && A.rows) {
+            for (const row of A.rows.values()) {
+              if (!(row.w < -0.3) || row.immune || row.harvest || row.free || typeof row.r !== "number" || typeof row.hit !== "number" || hpOf(row.target) > 1) continue;
+              if ((1 - row.r * ladderRatio(row.target, "sha", k)) * row.hit >= 1) {
+                kill = true;
+                break;
+              }
+            }
+          }
+          return (killCache["nm" + k] = kill);
+        };
+        // 第 k 张万箭（hxAoe 算不出来时南蛮也走这里）：本体的群伤账（aoeValue），接不住的机会按他剩下的闪／杀改。
+        const aoeCache = {};
+        const aoeK = (name, k) => {
+          const key = name + k;
+          if (!(key in aoeCache)) {
+            const need = name === "nanman" ? "sha" : "shan";
+            let v = null;
+            try {
+              v = skill.aoeValue(player, name, k > 1 ? (target, p) => 1 - (1 - p) * ladderRatio(target, need, k) : undefined);
+            } catch (e) {}
+            aoeCache[key] = typeof v === "number" ? v : null;
+          }
+          return aoeCache[key];
+        };
+        const wjKill = k => (killCache["wj" + k] ??= game.filterPlayer(current => skill.foe(player, current) && hpOf(current) <= 1).some(target => {
+          try {
+            if (!player.canUse({ name: "wanjian", isCard: true }, target, false)) return false;
+          } catch (e) {
+            return false;
+          }
+          const p = 1 - (1 - skill.missChance(player, target, "shan")) * (k > 1 ? ladderRatio(target, "shan", k) : 1);
+          return p * skill.killBonus(player, target) >= 1;
+        }));
+        // 决斗（同 duelBest）：这条线前面的南蛮、决斗已经要过他 k−1 次杀，第 k 次按他剩下的杀算（手册第九节"第二张决斗按还有谁没杀"）。
+        // kill：1 血、多半是反贼（或打死就赢）、救不太起来、多半没杀了。
+        const duelCache = {};
+        const duelK = (k, realSha) => {
+          const key = k + ":" + (realSha > 0 ? 1 : 0);
+          if (!(key in duelCache)) {
+            let value = null, kill = false;
+            for (const target of game.filterPlayer(current => skill.foe(player, current))) {
+              let ok = false;
+              try {
+                ok = player.canUse({ name: "juedou", isCard: true }, target);
+              } catch (e) {}
+              if (!ok) continue;
+              const q = 1 - (1 - skill.missChance(player, target, "sha")) * (k > 1 ? ladderRatio(target, "sha", k) : 1);
+              const v = q * (2 + skill.killBonus(player, target)) + (1 - q) * (realSha ? 0 : -1);
+              if (value === null || v > value) value = v;
+              if (q >= 0.5 && hpOf(target) <= 1 && skill.rescueChance(player, target) <= 0.5 && (skill.likelyRebel(player, target) || skill.endsGame(player, target))) kill = true;
+            }
+            duelCache[key] = { value, kill };
+          }
+          return duelCache[key];
+        };
+        // 铁索（手册第五节第 6 条、11-08 规矩）：只为连上要吃属性伤害的敌人（xd_ai_tiesuo.goodEnemy），后面还要有这回合能出的属性杀
+        // 引爆。推演里连上的敌人记 lk（一张连两个，杀够得着的、血少的先连），属性杀打连着的人时按传导算（shaInfo 的 extra）；
+        // 铁索本身不算价（价在引爆的那一刀）。没有属性杀、该连的都连上了（再印会把连好的解开）时不印。
+        let linkList;
+        const linkPool = () => {
+          if (linkList === undefined) {
+            linkList = [];
+            try {
+              const T = lib.skill.xd_ai_tiesuo, card = { name: "tiesuo", isCard: true }, shaCard = { name: "sha", isCard: true };
+              linkList = game.filterPlayer(current => {
+                try {
+                  return !!T?.goodEnemy?.(player, current) && player.canUse(card, current);
+                } catch (e) {
+                  return false;
+                }
+              });
+              const far = current => {
+                try {
+                  return player.canUse(shaCard, current) ? 0 : 1;
+                } catch (e) {
+                  return 1;
+                }
+              };
+              linkList.sort((x, y) => far(x) - far(y) || hpOf(x) - hpOf(y));
+            } catch (e) {
+              linkList = [];
+            }
+          }
+          return linkList;
+        };
+        const natureIdx = names.map((name, i) => name === "sha" && skill.linkedNature(groups[i][0]));
+        let linkedFoes;
+        const tsValue = st => {
+          if (!(st.sha > 0) || !natureIdx.some((x, i) => x && st.counts[i] > 0) || !(linkPool().length - st.lk > 0)) return null;
+          if (linkedFoes === undefined) {
+            linkedFoes = 0;
+            try {
+              linkedFoes = game.countPlayer(current => skill.foe(player, current) && current.isLinked());
+            } catch (e) {}
+          }
+          return linkPool().length + linkedFoes >= 2 ? 0 : null;
+        };
+        // 顺：距离 1 以内还有几张牌能顺（不看敌友，合法目标就算；手册第一节第 6 条）。
+        const shunRoot = () => {
+          let n = 0;
+          const card = { name: "shunshou", isCard: true };
+          for (const current of game.filterPlayer(current => current !== player)) {
+            try {
+              if (player.canUse(card, current)) n += current.countCards("hej");
+            } catch (e) {}
+          }
+          return n;
+        };
         const useValue = (name, st) => {
+          if (hx && name === "tiesuo") return tsValue(st);
           if (name === "wuzhong") return 1.6;
           if (name === "tao") return st.hp <= 1 ? 3 : 2;
           if (name === "jiu") return 0.3;
@@ -20236,7 +20582,9 @@ function createXdLegacyPack() {
             let value = null;
             const take = !nei && (name === "shunshou" || name === "guohe") ? skill.hxTakeBest(player, name) : undefined;
             if (nei && (name === "shunshou" || name === "guohe")) value = skill.neiSnatchBest(player, name)?.value ?? null;
-            else if (take !== undefined) value = take?.value ?? null;
+            // 顺、拆挑不出有价的人时不出；拆只在底线（guard：手里没有真闪也没有真无懈）要推记录时按 0 出（手册第七节、你 01:56），
+            // 平时留着（手册第二节）。
+            else if (take !== undefined) value = take?.value > 0 ? take.value : name === "guohe" && guard && take ? 0 : null;
             else if (name === "nanman" && hxA()) value = hxA().blocked ? null : hxA().open;
             else if (name === "wanjian" || name === "nanman") value = skill.aoeValue(player, name);
             else if (name === "juedou") value = skill.duelValue(player, countName(st, "sha"));
@@ -20269,25 +20617,45 @@ function createXdLegacyPack() {
         // 顺回来摸回来的牌）越多越少；
         // 技能声明手牌少有好处的加回来（core.emptyHand，韩信没有，所以只有掩护和留牌价管着他别把手牌打空）。
         const keyLoss = name => (["shan", "wuxie", "tao", "jiu"].includes(name) ? lib.skill.xd_ai_core?.keyLoss?.[name] ?? 2 : 0);
-        // 南蛮的种子（设计第十二节第 3 条）：回合末记录（X，南蛮）、回合外再用一张即时牌（闪、无懈……真的、印的都算）→（南蛮，Y），
-        // 下回合之＝南蛮，手里的杀都能当南蛮（旧位连印两张）；回合外没用牌时记录不动，X 是闪、无懈还能印一张。
-        // 记录（南蛮，闪／无懈）回合外没用牌也是两张，用了就没了。回合外用不用牌：手里有真的、或记录能印的防身名，按被要的期望次数。
-        // 价＝下回合能印的张数（不超过那时手里的杀）：第一张是先手（open），第二张把它逼出的杀收回来（full）；减去这几张杀留着本来的价。
+        // 南蛮的种子（设计第十二节第 3 条，手册第七节改正）：回合末记录（X，南蛮）、回合外恰好再用一张闪或无懈（真的、印的都算）→
+        // （南蛮，闪／无懈），下回合之＝南蛮，开门印两张；回合外没用牌时记录不动，X 是闪、无懈还能印一张；用了两张南蛮就被挤出去了，
+        // 用的是桃、酒（濒死）下回合两个都活、卡住。记录（南蛮，闪／无懈）回合外没用牌也是两张，用了就没了。
+        // 回合外用几张：手里有真的、或记录能印的防身名，按被要的期望次数 λ（其中闪、无懈 λq）的泊松分布——恰好一张闪／无懈
+        // P1＝λq·e^−λ，一张都没用 P0＝e^−λ（原来按"至少用一张"1−e^−λ 算两张，高估 4.5～22 倍）。
+        // 价＝下回合能印的张数（期望，不超过那时手里的杀）：第一张是先手（open），第二张把它逼出的杀收回来（full）；减去这几张杀留着本来的价。
         const seed = (a, b, k, kc) => {
           const A = hxA();
           if (!A || A.blocked || !(k > 0) || !a || !b || a === b || (a !== "nanman" && b !== "nanman")) return 0;
           const quiet = name => name === "shan" || name === "wuxie";
-          let lam = 0;
+          let lam = 0, lamQ = 0;
           for (const name of skill.printNames) {
             const E = hx.pctx.E[name] || 0;
-            if (E > 0 && (kc(name) > 0 || a === name || b === name)) lam += E;
+            if (E > 0 && (kc(name) > 0 || a === name || b === name)) {
+              lam += E;
+              if (quiet(name)) lamQ += E;
+            }
           }
-          const q = 1 - Math.exp(-lam);
-          const prints = b === "nanman" ? q * 2 + (1 - q) * (quiet(a) ? 1 : 0) : (1 - q) * (quiet(b) ? 2 : 0);
-          const n = Math.min(prints, Math.max(0, k - q) + 2 * (lib.skill.xd_ai_core?.freq?.sha ?? 0.28));
+          const P0 = Math.exp(-lam), P1 = lamQ * P0;
+          const prints = b === "nanman" ? P1 * 2 + P0 * (quiet(a) ? 1 : 0) : P0 * (quiet(b) ? 2 : 0);
+          const n = Math.min(prints, Math.max(0, k - (1 - P0)) + 2 * (lib.skill.xd_ai_core?.freq?.sha ?? 0.28));
           if (!(n > 0)) return 0;
           const worth = n <= 1 ? n * A.open : A.open + (n - 1) * A.full;
           return Math.max(0, worth - n * keepOf("sha"));
+        };
+        // 记录价：敌人看得出缺杀时只按容量价（被要闪的次数已按缺杀缩过，见上面 poor），不再按"一定挨一刀"保底（recordValue）。
+        const pval = (a, b, kc, hp) => (poor ? skill.printWorth(a, b, kc, hx.pctx, hp) : skill.printValue(a, b, kc, hx.pctx, hp));
+        // 底线（见上面 guard）：回合末记录能印闪或无懈＝两格不同名、有一格是闪／无懈（回合外被要闪时之＝闪，被要无懈时之＝无懈），
+        // 手里还留着杀；这条线收得走人（斩杀线，st.kill）也算。BASE 约等于少挨一刀的价（三张牌）：一般先保底线；但一回合能打出远超这个价的连放（比如四张群攻、满手牌反正要弃）时照样打，不整回合干坐（你 15:40：小改动，不大动干戈）。
+        const keepsBase = (a, b) => !!a && !!b && a !== b && (a === "shan" || a === "wuxie" || b === "shan" || b === "wuxie");
+        const BASE = 3;
+        // 回合末的价只看记录两格、手牌、体力、摸到的张数和斩杀线；推演里只差杀次数、酒、连印计数（nm、wj、du、lk、sh）的节点很多，
+        // endValue 按这几样记一遍（hxEndMemo，第十节：节点多了也要跑得动）。
+        const endMemo = new Map();
+        const hxEndMemo = st => {
+          const key = [st.a, st.b, st.counts.join(","), st.hp, st.extra, st.kill ? 1 : 0].join("|");
+          let v = endMemo.get(key);
+          if (v === undefined) endMemo.set(key, (v = hxEnd(st)));
+          return v;
         };
         const hxEnd = st => {
           const L = Math.max(0, st.hp + limitExtra), S = countName(st, "sha");
@@ -20304,13 +20672,14 @@ function createXdLegacyPack() {
             const kc = name => (name === "sha" ? k : kept.reduce((t, x) => t + (x === name ? 1 : 0), 0));
             let v = k * keepOf("sha");
             for (const name of kept) v += keepOf(name);
-            const pv = skill.printValue(st.a, st.b, kc, hx.pctx, st.hp);
+            const pv = pval(st.a, st.b, kc, st.hp);
             v += pv + seed(st.a, st.b, k, kc);
+            if (guard && (st.kill || k > 0 && keepsBase(st.a, st.b))) v += BASE;
             if (hx.T > 0) {
               const keys = [];
               let junk = n - held;
               // 印刷用的杀被抽走一张，少掉的是边际印刷价（多出来的杀抽走不少印，是垫牌）。
-              const margin = k > 0 ? pv - skill.printValue(st.a, st.b, name => (name === "sha" ? k - 1 : kc(name)), hx.pctx, st.hp) : 0;
+              const margin = k > 0 ? pv - pval(st.a, st.b, name => (name === "sha" ? k - 1 : kc(name)), st.hp) : 0;
               for (let j = 0; j < k; j++) {
                 if (margin > 0.05) keys.push(margin);
                 else junk++;
@@ -20331,7 +20700,7 @@ function createXdLegacyPack() {
           return best - skill.taoLock(st.a, st.b, count, rescue, st.hp) + hx.empty(n) - 0.5 * gap;
         };
         const endValue = st => {
-          if (hx) return hxEnd(st);
+          if (hx) return hxEndMemo(st);
           const list = [];
           names.forEach((name, i) => {
             for (let k = 0; k < st.counts[i]; k++) list.push(keepOf(name));
@@ -20345,6 +20714,8 @@ function createXdLegacyPack() {
         };
         // 出一张真名为 names[i] 的牌：与 mod.cardname 一致，之本身变无中；之不是它时，杀变之；其余照原名。
         const step = (st, i) => {
+          // 主公第一回合放过南蛮了（见上面 opening）：这回合不再出即时牌。
+          if (st.fin) return null;
           const name = names[i], zhi = zhiOf(st.a, st.b, st);
           let as;
           if (zhi && name === zhi) {
@@ -20355,16 +20726,43 @@ function createXdLegacyPack() {
             if (!usable(name, st)) return null;
             as = name;
           }
+          // 主公第一回合（见上面 opening）：不喝酒；不把杀印成南蛮；手里有真南蛮时杀全留着。
+          if (opening && (as === "jiu" || name === "sha" && (as === "nanman" || openSha))) return null;
+          // 连垫两块（手册第六节第 2 条，不是内奸）：这回合那张普通杀刚出完（没有连弩）就喝酒，加伤用不上、记录两格都死，白费一块垫牌。
+          if (hx && as === "jiu" && st.b === "sha" && !(st.sha > 0)) return null;
           // 缺杀不出杀。例外：这张【杀】留到回合末反正要被弃（你 10-26 04:39），或者已经喝过酒（酒不白喝，你 10-26 19:26），照常打出。
           if (as === "sha" && !st.buff && countName(st, "sha") < 2 && !sha(i).exception && !doomed(st, i)) return null;
-          // 喝过酒的【杀】按两点伤害算。
-          let gain = as === "sha" ? sha(i, 1 + st.buff).value : useValue(as, st);
+          // 喝过酒的【杀】按两点伤害算；不是内奸时前面万箭逼过的闪、铁索连上的人也算进去（见 sha）。
+          const hit = as === "sha" ? sha(i, 1 + st.buff, hx ? st.wj : 0, hx && natureIdx[i] ? st.lk : 0) : null;
+          let gain = as === "sha" ? hit.value : useValue(as, st);
           if (typeof gain !== "number") return null;
           // 南蛮（设计第十二节）：这条线里前面出过南蛮（op），这一张南蛮把它逼出的杀收回来（整账 full）；决斗、借刀收一个敌人（cred1）。
+          // 不是内奸：这条线里第二张起的南蛮、万箭、决斗按每个人剩下的杀、闪重算（手册第九节"连印的边际价递减"，nmK、aoeK、duelK）。
           const A = hxA() && !hxA().blocked ? hxA() : null;
-          if (A && st.op) {
+          let kill = false;
+          if (hx && (as === "nanman" && st.nm > 0 || as === "wanjian" && st.wj > 0 || as === "juedou" && st.nm + st.du > 0)) {
+            if (as === "nanman") gain = A ? nmK(st.nm + 1) : aoeK("nanman", st.nm + 1);
+            else if (as === "wanjian") gain = aoeK("wanjian", st.wj + 1);
+            else {
+              const duel = duelK(st.nm + st.du + 1, countName(st, "sha"));
+              gain = duel.value;
+              kill = duel.kill;
+            }
+            if (typeof gain !== "number") return null;
+          } else if (A && st.op) {
             if (as === "nanman") gain = A.full;
             else if (as === "juedou" || as === "jiedao") gain += A.cred1;
+          }
+          // 斩杀线（底线的例外，见 guard）：这一步收得走一个 1 血的敌人。
+          if (guard && !kill) {
+            try {
+              if (as === "sha") kill = !!hit.exception;
+              else if (as === "nanman") kill = nmKill(st.nm + 1);
+              else if (as === "wanjian") kill = wjKill(st.wj + 1);
+              else if (as === "juedou") kill = duelK(st.nm + st.du + 1, countName(st, "sha")).kill;
+            } catch (e) {
+              kill = false;
+            }
           }
           const next = st.counts.slice();
           next[i]--;
@@ -20375,7 +20773,15 @@ function createXdLegacyPack() {
               buff: as === "jiu" ? Math.min(1, st.buff + 1) : as === "sha" ? 0 : st.buff,
               extra: hx ? st.extra + (as === "shunshou" || as === "wugu" ? 1 : as === "wuzhong" ? 2 : as === "jiedao" && jdDisarm() ? 1 : 0) : 0,
               jd: !!st.jd || (as === "jiedao" && jdLast()),
-              op: A && (as === "nanman" || st.op) ? 1 : 0
+              op: A && (as === "nanman" || st.op) ? 1 : 0,
+              fin: !!st.fin || (opening && as === "nanman"),
+              nm: hx && as === "nanman" ? Math.min(8, st.nm + 1) : st.nm,
+              wj: hx && as === "wanjian" ? Math.min(8, st.wj + 1) : st.wj,
+              du: hx && as === "juedou" ? Math.min(8, st.du + 1) : st.du,
+              lk: hx ? (as === "tiesuo" ? Math.min(linkPool().length, st.lk + 2) : as === "sha" && natureIdx[i] ? 0 : st.lk) : 0,
+              sh: as === "shunshou" && st.sh > 0 ? st.sh - 1 : st.sh,
+              // 斩杀线只在底线时有用（见 hxEnd），别的时候不记，省得同样的局面因为它分成两个节点。
+              kill: guard && (!!st.kill || kill)
             }
           };
           // 内奸的群体锦囊可能把 1 血的主公打进濒死（你 10-25 14:24）：要留一张真桃救他。多半会濒死时，按“救回”推演：
@@ -20394,10 +20800,23 @@ function createXdLegacyPack() {
           }
           return move;
         };
+        // 连印计数（nm、wj、du）和顺的牌数（sh）只在这条线后面还出得了那个名字时有用：手里有真牌，或它在记录里、手里还有杀能印
+        // （推演里摸到的牌不分名字，别的名字进不了记录）；wj 还管普通杀（万箭逼过闪）。用不上时不进键，同样的局面只算一次
+        // （手册第十节：节点多了也要跑得动）。
+        const idxOf = {};
+        names.forEach((name, i) => (idxOf[name] ??= []).push(i));
+        const has = (st, name) => !!idxOf[name] && idxOf[name].some(i => st.counts[i] > 0);
+        const can = (st, name) => has(st, name) || (st.a === name || st.b === name) && has(st, "sha");
+        const keyTail = st => {
+          const duel = can(st, "juedou");
+          return [can(st, "nanman") || duel ? st.nm : 0, can(st, "wanjian") || st.sha > 0 && has(st, "sha") ? st.wj : 0, duel ? st.du : 0, st.lk,
+            can(st, "shunshou") ? st.sh : 0, st.kill ? 1 : 0].join(",");
+        };
         const memo = new Map();
         let nodes = 0;
         const best = st => {
-          const key = [st.a, st.b, st.counts.join(","), st.sha, st.jiu, st.hp, st.buff, st.extra, st.jd ? 1 : 0, st.op ? 1 : 0].join("|");
+          const key = [st.a, st.b, st.counts.join(","), st.sha, st.jiu, st.hp, st.buff, st.extra, st.jd ? 1 : 0, st.op ? 1 : 0, st.fin ? 1 : 0,
+            hx ? keyTail(st) : ""].join("|");
           if (memo.has(key)) return memo.get(key);
           let result = endValue(st);
           if (++nodes < 30000) {
@@ -20420,7 +20839,14 @@ function createXdLegacyPack() {
           buff: player.hasSkill("jiu") ? 1 : 0,
           extra: 0,
           jd: false,
-          op: hxA() && !hxA().blocked && hxA().opened ? 1 : 0
+          op: hxA() && !hxA().blocked && hxA().opened ? 1 : 0,
+          fin: openDone,
+          nm: 0,
+          wj: 0,
+          du: 0,
+          lk: 0,
+          sh: hx && names.includes("shunshou") ? shunRoot() : -1,
+          kill: false
         };
         const stop = endValue(root);
         // 第九条：这一步是不是定向收反贼（杀、决斗打 1 血的反贼，铁索连上 1 血的反贼）。一样好时先做，摸了三张再重新规划；
@@ -20464,7 +20890,7 @@ function createXdLegacyPack() {
         if (attack && countName(root, 'sha') < 2 && attack.exception) attack = attack.exception;
         let target = attack?.target || null;
         if (!nei) {
-          // 顺、拆照上面挑的人（你 01:47：尽量打同一个敌人）；只为推记录出的拆（价 0）让本体挑。
+          // 顺、拆照上面挑的人（你 01:47：尽量打同一个敌人）；挑不出有价的人时让本体挑。
           if (choice.as === "shunshou" || choice.as === "guohe") {
             const take = skill.hxTakeBest(player, choice.as);
             target = take?.value > 0 ? take.target : null;
