@@ -18314,7 +18314,7 @@ function createXdLegacyPack() {
       // 敌人的铁索要连上自己人时挡不挡（Fable 11-09 设计第四节第 2 条，复查改正：铁索本身不伤人；属性伤害打在一名横置角色身上后，
       // 只传给"别的"横置角色，所以只连一个人时什么都传不了）。返回 true＝不挡。两条都满足才挡：
       // 1. 连上以后能传：场上还有别的横置角色，或者这张铁索后面还要连上别人；
-      // 2. 连着的自己人里有人血量危险（体力＋护甲 ≤ 2），或者看得见敌人马上能打出加伤的属性杀（boostedNature）。
+      // 2. 另一个连着的自己人血量危险（体力＋护甲 ≤ 2）（你 11-09 16:26 改：被连的这个自己血少、看得见加伤属性杀都不再单独算）。
       // 已经横置的人被铁索是解开（好事），对拼无懈、判定都不归这里管。ally 可以换成别的"自己人"判断（韩信用自己的）。
       tiesuoVeto(event, player, ally) {
         if (event?.type !== "wuxie") return false;
@@ -18332,9 +18332,9 @@ function createXdLegacyPack() {
         const linkedAfter = current => !!current.isLinked?.() !== rest.includes(current);
         const others = game.filterPlayer(current => current !== target && linkedAfter(current));
         if (!others.length) return true;
-        const group = [target].concat(others.filter(current => ally(current)));
-        if (group.some(current => current.hp + (current.hujia || 0) <= 2)) return false;
-        return !lib.skill.xd_ai_wuxie.boostedNature(player, ally);
+        // 你 11-09 16:26：只有"另一个血量危险（体力＋护甲 ≤ 2）的队友"也连着时才挡——他挨属性伤害会把这一个一起拖成重伤；
+        // 被连的这一个自己血少、正被集火，反正要吃属性伤害、吃了就解开，不挡；看得见加伤属性杀也照这条（只连他一个人时传不出去）。
+        return !others.some(current => ally(current) && current.hp + (current.hujia || 0) <= 2);
       },
       // 敌人过拆自己人时挡不挡（你 11-09 15:54）：拆手牌是随机拆一张，多半是比无懈便宜的牌，拿一张无懈去换不划算。
       // 只在这几种时候挡：装着关键装备（八卦、仁王、+1 马……，或本体看来贵的装备），拆掉武器、-1 马以后够不着敌人（guoheWorth），
@@ -20753,8 +20753,9 @@ function createXdLegacyPack() {
           // 连垫两块（手册第六节第 2 条，不是内奸）：这回合那张普通杀刚出完（没有连弩）就喝酒，加伤用不上、记录两格都死，白费一块垫牌。
           if (hx && as === "jiu" && st.b === "sha" && !(st.sha > 0)) return null;
           // 手里一张杀都没有就不喝酒（你 11-09 16:00）：酒只有两种用处——给下一张杀加伤、当垫牌换两张印，都要杀；
-          // 光为了换一换记录喝掉，回合外还能救自己的那张酒就白费了。
-          if (as === "jiu" && !(countName(st, "sha") > 0)) return null;
+          // 光为了换一换记录喝掉，回合外还能救自己的那张酒就白费了。例外：记录里的桃锁住了手里的真桃（之＝桃时真桃只能当无中，
+          // 救不了队友，你 11-08 15:32），喝酒把桃挤出记录是有用的，交给回合末的 taoLock 账去比。
+          if (as === "jiu" && !(countName(st, "sha") > 0) && !((st.a === "tao" || st.b === "tao") && countName(st, "tao") > 0)) return null;
           // 缺杀不出杀。例外：这张【杀】留到回合末反正要被弃（你 10-26 04:39），或者已经喝过酒（酒不白喝，你 10-26 19:26），照常打出。
           if (as === "sha" && !st.buff && countName(st, "sha") < 2 && !sha(i).exception && !doomed(st, i)) return null;
           // 喝过酒的【杀】按两点伤害算；不是内奸时前面万箭逼过的闪、铁索连上的人也算进去（见 sha）。
