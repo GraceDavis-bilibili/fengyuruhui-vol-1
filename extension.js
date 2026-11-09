@@ -12118,6 +12118,50 @@ function createXdLegacyPack() {
         if (mode === "fire" && (get.name(card, player) === "tao" || skill.keptShan(player, evt).includes(card))) return -1000000 + num;
         return score;
       },
+      // 天命要弃的牌值几张（你 11-09 16:35）：手牌按留牌价（xd_ai_keep.values，弃牌阶段那套），进攻牌（南蛮万箭顺拆决斗……）
+      // 取"留着"和"现在用"（core.wish）里大的那个；装备和算不出的按本体有用度 ÷ 5。
+      prices(player) {
+        const out = new Map(), core = lib.skill.xd_ai_core, keep = lib.skill.xd_ai_keep;
+        const hand = player.getCards("h");
+        let kv = new Map();
+        try {
+          kv = keep.values(player, hand, "discard");
+        } catch (e) {}
+        let X;
+        try {
+          X = core.wishCtx(player);
+        } catch (e) {}
+        const attack = ["nanman", "wanjian", ...(keep?.attackNames || [])];
+        for (const card of player.getCards("he")) {
+          let v = kv.get(card);
+          if (typeof v !== "number") {
+            try {
+              v = get.useful(card) / 5;
+            } catch (e) {
+              v = 1;
+            }
+          }
+          if (hand.includes(card) && attack.includes(get.name(card, player))) {
+            try {
+              v = Math.max(v, core.wish(player, card, X).v || 0);
+            } catch (e) {}
+          }
+          out.set(card, v);
+        }
+        return out;
+      },
+      // 摸两张值多少：每张 0.9；手里没闪、这一刀躲得开时，再加"两张里摸到闪"的机会 × 这一刀的血价。
+      drawWorth(player, evt) {
+        const core = lib.skill.xd_ai_core;
+        let v = 1.8;
+        try {
+          if (lib.skill.xd_ai_tianming.shanNeed(player, evt) > 0 && !player.countCards("h", card => get.name(card, player) === "shan")) {
+            const h = core.hpOf(player);
+            v += 0.35 * (h >= 2 ? core.hpCost(h) : 3);
+          }
+        } catch (e) {}
+        return v;
+      },
       prepare(player, event) {
         const skill = lib.skill.xd_ai_tianming;
         const evt = skill.context(event);
@@ -12131,11 +12175,24 @@ function createXdLegacyPack() {
               const use = skill.useOnFire(player, evt);
               if (typeof use === "boolean") return use;
             } else if (mode === "block" && skill.blockLoses(player)) return false;
+            // 你 11-09 16:35：最便宜的两张（不够就全部）加起来不如摸两张才发动；没牌可扔、要扔关键牌时宁可硬扛。
+            try {
+              const cards = player.getCards("he").filter(card => lib.filter.cardDiscardable(card, player, "tianming"));
+              const price = skill.prices(player), need = Math.min(2, cards.length);
+              const lose = cards.map(card => price.get(card) ?? 1).sort((a, b) => a - b).slice(0, need).reduce((t, x) => t + x, 0);
+              if (!(lose < skill.drawWorth(player, evt))) return false;
+            } catch (e) {}
             return typeof original === "function" ? original.apply(this, args) : event.choice !== false;
           };
         } else {
+          let price = null;
           event.ai = function (card, ...args) {
-            const score = typeof original === "function" ? original.call(this, card, ...args) : get.unuseful(card);
+            let score = typeof original === "function" ? original.call(this, card, ...args) : get.unuseful(card);
+            // 弃最便宜的（你 11-09 16:35）：分数＝−价 × 5，跟本体"有用度"同一个尺度；藤甲、桃、闪的特别规则照旧叠在后面。
+            try {
+              price ??= skill.prices(player);
+              if (price.has(card)) score = -5 * price.get(card);
+            } catch (e) {}
             return skill.discardScore(player, evt, card, score);
           };
         }
