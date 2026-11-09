@@ -20157,12 +20157,12 @@ function createXdLegacyPack() {
       },
       // 群体锦囊（你 10-24 10:02）：不打死队友、受影响的敌人比队友多才开，返回收益；否则 null。
       // pOf(target, p)（不是内奸的推演用）：同一回合第 k 张群伤按他剩下的杀／闪改接不住的机会（手册第九节）。
-      aoeValue(player, name, pOf) {
+      aoeValue(player, name, pOf, raw) {
         const skill = lib.skill.xd_shenji_ai, card = { name, isCard: true };
         // 第九条：内奸按平衡账算（主公是唯一的队友，他挨的一下也扣）。
         if (skill.isNei(player)) return skill.neiAoe(player, name);
         const response = name === "nanman" ? "sha" : "shan";
-        let enemies = 0, friends = 0, value = 0;
+        let enemies = 0, friends = 0, value = 0, killLine = 0;
         const nei = skill.isNei(player);
         let peaches = nei ? skill.countReal(player, "tao") : 0;
         for (const target of game.filterPlayer(current => current !== player)) {
@@ -20207,10 +20207,16 @@ function createXdLegacyPack() {
             value -= skill.hitSwing(p);
           } else {
             enemies++;
-            value += skill.hitSwing(p) + p * skill.killBonus(player, target);
+            const kb = p * skill.killBonus(player, target);
+            if (kb > killLine) killLine = kb;
+            value += skill.hitSwing(p) + kb;
           }
         }
-        return enemies > friends ? value : null;
+        // 你 11-09 16:48：能收掉一个多半接不住的残血敌人时，打伤几个队友也值得（队友不会被打死，见上面 1 血队友的处理）；
+        // 这时不看"敌人比队友多"，账是正的就开。
+        const ok = enemies > friends || killLine >= 1 && value > 0;
+        if (raw) return { value, ok };
+        return ok ? value : null;
       },
       // 反贼韩信的群攻碰到 1 血、可能接不住的队友（你 11-02 04:43，照卫霍 10-31 的规则）。
       // 返回 null＝不开；{ value, doomed }：value 加进群攻的估值（牌），doomed＝他必死、不算受伤的队友。
@@ -20574,6 +20580,35 @@ function createXdLegacyPack() {
           }
           return aoeCache[key];
         };
+        // 斩杀线（你 11-09 16:48）：一个多半接不住闪、血不止 1 的敌人，这回合万箭、杀一张张叠上去打得死他时，
+        // 前面几张万箭可以不管"敌人比队友多"（rawWj 的账照算，队友会挨的那下照扣），但这条线必须真打死他（st.owe，见 best）。
+        let focusCache;
+        const focusOf = () => {
+          if (focusCache !== undefined) return focusCache;
+          focusCache = null;
+          if (!hx) return null;
+          try {
+            for (const target of game.filterPlayer(current => skill.foe(player, current) && hpOf(current) >= 2 && hpOf(current) <= 6)) {
+              if (!player.canUse({ name: "wanjian", isCard: true }, target, false)) continue;
+              const pw = skill.missChance(player, target, "shan");
+              if (!(pw >= 0.6)) continue;
+              const hp = hpOf(target);
+              if (focusCache && (pw < focusCache.pw || pw === focusCache.pw && hp >= focusCache.hp)) continue;
+              focusCache = { t: target, pw, hp, bonus: skill.killBonus(player, target, hp) };
+            }
+            if (focusCache && !(focusCache.bonus > 0)) focusCache = null;
+          } catch (e) {
+            focusCache = null;
+          }
+          return focusCache;
+        };
+        const rawWj = k => {
+          let r = null;
+          try {
+            r = skill.aoeValue(player, "wanjian", k > 1 ? (target, p) => 1 - (1 - p) * ladderRatio(target, "shan", k) : undefined, true);
+          } catch (e) {}
+          return r && typeof r.value === "number" ? r.value : null;
+        };
         const wjKill = k => (killCache["wj" + k] ??= game.filterPlayer(current => skill.foe(player, current) && hpOf(current) <= 1).some(target => {
           try {
             if (!player.canUse({ name: "wanjian", isCard: true }, target, false)) return false;
@@ -20844,7 +20879,8 @@ function createXdLegacyPack() {
           // 喝过酒的【杀】按两点伤害算；不是内奸时前面万箭逼过的闪、铁索连上的人也算进去（见 sha）。
           const hit = as === "sha" ? sha(i, 1 + st.buff, hx ? st.wj : 0, hx && natureIdx[i] ? st.lk : 0) : null;
           let gain = as === "sha" ? hit.value : useValue(as, st);
-          if (typeof gain !== "number") return null;
+          const focus = as === "wanjian" || as === "sha" ? focusOf() : null;
+          if (typeof gain !== "number" && !(focus && as === "wanjian")) return null;
           // 南蛮（设计第十二节）：这条线里前面出过南蛮（op），这一张南蛮把它逼出的杀收回来（整账 full）；决斗、借刀收一个敌人（cred1）。
           // 不是内奸：这条线里第二张起的南蛮、万箭、决斗按每个人剩下的杀、闪重算（手册第九节"连印的边际价递减"，nmK、aoeK、duelK）。
           const A = hxA() && !hxA().blocked ? hxA() : null;
@@ -20857,10 +20893,27 @@ function createXdLegacyPack() {
               gain = duel.value;
               kill = duel.kill;
             }
-            if (typeof gain !== "number") return null;
+            if (typeof gain !== "number" && !(focus && as === "wanjian")) return null;
           } else if (A && st.op) {
             if (as === "nanman") gain = A.full;
             else if (as === "juedou" || as === "jiedao") gain += A.cred1;
+          }
+          let owe = st.owe || 0, fd = st.fd || 0;
+          if (typeof gain !== "number") {
+            gain = rawWj(st.wj + 1);
+            if (typeof gain !== "number") return null;
+            owe = 1;
+          }
+          if (focus) {
+            const before = fd;
+            if (as === "wanjian") {
+              if (1 - (1 - focus.pw) * (st.wj > 0 ? ladderRatio(focus.t, "shan", st.wj + 1) : 1) >= 0.6) fd++;
+            } else if (hit?.target === focus.t) fd += 1 + st.buff;
+            fd = Math.min(fd, focus.hp);
+            if (before < focus.hp && fd >= focus.hp) {
+              gain += focus.bonus;
+              kill = true;
+            }
           }
           // 斩杀线（底线的例外，见 guard）：这一步收得走一个 1 血的敌人。
           if (guard && !kill) {
@@ -20890,7 +20943,8 @@ function createXdLegacyPack() {
               lk: hx ? (as === "tiesuo" ? Math.min(linkPool().length, st.lk + 2) : as === "sha" && natureIdx[i] ? 0 : st.lk) : 0,
               sh: as === "shunshou" && st.sh > 0 ? st.sh - 1 : st.sh,
               // 斩杀线只在底线时有用（见 hxEnd），别的时候不记，省得同样的局面因为它分成两个节点。
-              kill: guard && (!!st.kill || kill)
+              kill: guard && (!!st.kill || kill),
+              fd, owe
             }
           };
           // 内奸的群体锦囊可能把 1 血的主公打进濒死（你 10-25 14:24）：要留一张真桃救他。多半会濒死时，按“救回”推演：
@@ -20919,7 +20973,7 @@ function createXdLegacyPack() {
         const keyTail = st => {
           const duel = can(st, "juedou");
           return [can(st, "nanman") || duel ? st.nm : 0, can(st, "wanjian") || st.sha > 0 && has(st, "sha") ? st.wj : 0, duel ? st.du : 0, st.lk,
-            can(st, "shunshou") ? st.sh : 0, st.kill ? 1 : 0].join(",");
+            can(st, "shunshou") ? st.sh : 0, st.kill ? 1 : 0, st.fd || 0, st.owe || 0].join(",");
         };
         const memo = new Map();
         let nodes = 0;
@@ -20927,7 +20981,8 @@ function createXdLegacyPack() {
           const key = [st.a, st.b, st.counts.join(","), st.sha, st.jiu, st.hp, st.buff, st.extra, st.jd ? 1 : 0, st.op ? 1 : 0, st.fin ? 1 : 0,
             hx ? keyTail(st) : ""].join("|");
           if (memo.has(key)) return memo.get(key);
-          let result = endValue(st);
+          // 斩杀线欠着（见 focusOf）：没打死他就不能停在这里。
+          let result = st.owe && !(st.fd >= (focusOf()?.hp ?? Infinity)) ? -Infinity : endValue(st);
           if (++nodes < 30000) {
             for (let i = 0; i < names.length; i++) {
               if (!st.counts[i]) continue;
