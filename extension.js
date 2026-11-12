@@ -24788,7 +24788,8 @@ export default function () {
                 seen.add(current);
                 const list = [];
                 if (current.card) list.push(current.card);
-                if (Array.isArray(current.cards)) list.push(...current.cards);
+                // 判定阶段事件的 cards 是还没轮到的延时锦囊，不是正在判定的那张：只认 card。
+                if (Array.isArray(current.cards) && current.name !== "phaseJudge") list.push(...current.cards);
                 if (current.judging) list.push(current.judging);
                 for (const item of list) {
                   if (lib.skill.xd_kongqiu_engine.isHongCard(item, owner)) return true;
@@ -24884,6 +24885,7 @@ export default function () {
                 state = player.storage.xd_hui_state = {
                   ready: false,
                   wasMax: false,
+                  unlocked: false,
                   classes: {},
                   serial: 0,
                   skillMeta: {},
@@ -25099,28 +25101,72 @@ export default function () {
               });
               return best;
             },
-            async recruit(player) {
-              const engine = lib.skill.xd_kongqiu_engine;
-              if (!player?.isIn?.()) return;
+            // 【诲】：手牌首次变为全场最多只是"开启"。开启以后，孔丘自己的每次判定改用武将牌堆：
+            // 翻出的武将牌就是判定牌（没有花色和点数），判完置于某体力值上。判定后的摸牌由【仁】负责。
+            disciplePile() {
               if (!_status.characterlist) game.initCharacterList();
-              if (!Array.isArray(_status.characterlist) || !_status.characterlist.length) return;
-              _status.characterlist.randomSort();
-              const name = _status.characterlist[0];
+              return Array.isArray(_status.characterlist) ? _status.characterlist : [];
+            },
+            hasDisciplePile() {
+              return lib.skill.xd_kongqiu_engine.disciplePile().some(name => name && lib.character[name]);
+            },
+            pickDisciple() {
+              const list = lib.skill.xd_kongqiu_engine.disciplePile();
+              if (!list.length) return null;
+              list.randomSort();
+              const name = list.find(item => item && lib.character[item]);
+              if (!name) return null;
+              list.remove(name);
+              return name;
+            },
+            // 判定用的武将牌：一张临时牌，只显示武将头像；离开处理区就消失，不会进弃牌堆、手牌或牌堆。
+            createJudgeCard(name) {
+              if (!lib.card.xd_hui_card) {
+                lib.card.xd_hui_card = { type: "xd_hui", vanish: true, destroyLog: false, ai: { basic: { value: 0, useful: 0 } } };
+                lib.translate.xd_hui_card_info = "【诲】用来判定的武将牌，没有花色和点数。";
+              }
+              lib.translate.xd_hui_card = get.translation(name);
+              const card = game.createCard("xd_hui_card", "none", "none");
+              card.suit = "none";
+              card.number = 0;
+              card.storage ||= {};
+              card.storage.vanish = true;
+              card.storage.xd_hui_character = name;
+              card.destroyLog = false;
+              card.destroyed = (current, position) => position !== "ordering";
+              game.broadcastAll((current, character) => {
+                if (!current) return;
+                try {
+                  current.setBackground?.(character, "character");
+                  current.classList?.remove?.("fullskin");
+                  current.classList?.add?.("fullimage");
+                  const hide = ["name", "name2", "info", "suitnum", "range", "gaintag"];
+                  for (const key of hide) {
+                    if (current.node?.[key]?.style) current.node[key].style.display = "none";
+                  }
+                } catch (e) {}
+              }, card, name);
+              return card;
+            },
+            removeJudgeCard(card) {
+              if (!card || card._selfDestroyed) return;
+              game.broadcastAll(current => {
+                try { current?.fix?.(); } catch (e) {}
+                try { current?.remove?.(); } catch (e) {}
+              }, card);
+            },
+            async placeDisciple(player, name) {
+              const engine = lib.skill.xd_kongqiu_engine;
               if (!name || !lib.character[name]) return;
-              _status.characterlist.remove(name);
-              game.log(player, "以【诲】判得了", "#y" + get.translation(name));
+              const maxHp = Math.max(0, Math.floor(Number(player.maxHp) || 0));
+              if (!player.isIn() || maxHp < 1) {
+                engine.disciplePile().add(name);
+                return;
+              }
               try {
                 if (lib.skill.rehuashen?.drawCharacter) lib.skill.rehuashen.drawCharacter(player, [name]);
                 else player.popup(get.translation(name));
               } catch (e) { player.popup(get.translation(name)); }
-              // 【仁】：武将牌判定后摸一张。
-              await player.draw();
-
-              const maxHp = Math.max(0, Math.floor(Number(player.maxHp) || 0));
-              if (!player.isIn() || maxHp < 1) {
-                _status.characterlist.add(name);
-                return;
-              }
               const controls = Array.from({ length: maxHp }, (_, i) => `${i + 1}体力`);
               const result = await player.chooseControl(controls)
                 .set("prompt", `【诲】：将${get.translation(name)}置于一个体力上限槽位`)
@@ -25347,7 +25393,7 @@ export default function () {
               content(storage, player) {
                 const engine = lib.skill.xd_kongqiu_engine, state = engine.huiState(player);
                 const slots = Object.keys(state.classes).map(Number).sort((a, b) => a - b);
-                if (!slots.length) return "尚无弟子。";
+                if (!slots.length) return state.unlocked ? "尚无弟子。" : "手牌尚未变为最多。";
                 return slots.map(slot => {
                   const cls = state.classes[String(slot)], active = engine.activeSlot(player, slot);
                   const names = (cls.disciples || []).map(item => get.translation(item.character)).join("、") || "无";
@@ -25355,7 +25401,7 @@ export default function () {
                 }).join("<br>");
               }
             },
-            group: ["xd_hui_boot", "xd_hui_watch", "xd_hui_round", "xd_hui_count", "xd_hui_die"],
+            group: ["xd_hui_boot", "xd_hui_watch", "xd_hui_judge", "xd_hui_place", "xd_hui_round", "xd_hui_count", "xd_hui_die"],
             onremove(player) {
               lib.skill.xd_kongqiu_engine.cleanupHui(player);
               delete player.storage.xd_hui_state;
@@ -25391,13 +25437,52 @@ export default function () {
                 },
                 async content(event, trigger, player) {
                   const engine = lib.skill.xd_kongqiu_engine, state = engine.huiState(player);
-                  const now = engine.isHandMax(player), recruit = !state.wasMax && now;
-                  // 先写回，再招生；招生会因【仁】摸牌，不能让嵌套 gain 再次招生。
+                  const now = engine.isHandMax(player), first = !state.unlocked && !state.wasMax && now;
                   state.wasMax = now;
-                  if (recruit) {
+                  // 手牌首次由"不是最多"变为"最多"：开启，只此一次。此后他自己的判定改用武将牌堆。
+                  if (first) {
+                    state.unlocked = true;
                     player.logSkill("xd_hui");
-                    await engine.recruit(player);
-                  } else engine.syncHui(player);
+                    game.log(player, "的手牌变为全场最多，此后判定改用武将牌堆");
+                  }
+                  engine.syncHui(player);
+                }
+              },
+              judge: {
+                charlotte: true,
+                forced: true,
+                popup: false,
+                firstDo: true,
+                trigger: { player: "judgeBegin" },
+                filter(event, player) {
+                  const engine = lib.skill.xd_kongqiu_engine;
+                  if (!engine.huiState(player).unlocked || !player.isIn()) return false;
+                  if (event.directresult || event._xd_hui_general) return false;
+                  return engine.hasDisciplePile();
+                },
+                content(event, trigger, player) {
+                  const engine = lib.skill.xd_kongqiu_engine;
+                  const name = engine.pickDisciple();
+                  if (!name) return;
+                  player.logSkill("xd_hui");
+                  trigger._xd_hui_general = name;
+                  trigger._xd_hui_card = trigger.directresult = engine.createJudgeCard(name);
+                }
+              },
+              place: {
+                charlotte: true,
+                forced: true,
+                popup: false,
+                forceDie: true,
+                trigger: { player: "judgeEnd" },
+                filter(event) {
+                  return !!event._xd_hui_general && !event._xd_hui_placed;
+                },
+                async content(event, trigger, player) {
+                  const engine = lib.skill.xd_kongqiu_engine;
+                  trigger._xd_hui_placed = true;
+                  engine.removeJudgeCard(trigger._xd_hui_card);
+                  await engine.placeDisciple(player, trigger._xd_hui_general);
                 }
               },
               round: {
