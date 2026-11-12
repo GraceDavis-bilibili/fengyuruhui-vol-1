@@ -39954,6 +39954,18 @@ export default function () {
               if (card.name == 'taoyuan') return !game.hasPlayer(current => current.isDamaged() && get.attitude(player, current) > 0);
               return false;
             },
+            // 成长两次以后（你 11-12）：放开手脚，用牌不再算成本。
+            aiFree(player) {
+              const s = player.storage.xd_sijiao;
+              return Array.isArray(s) && s[0] >= 2;
+            },
+            // 放开手脚时唯一的例外：装着诸葛连弩，手里又没有第二张连弩，别的武器不装。
+            aiKeepZhuge(player, card) {
+              if (!lib.skill.xd_sijiao.aiFree(player) || get.subtype(card) != 'equip1' || get.name(card, player) == 'zhuge') return false;
+              const worn = player.getEquips?.(1) || [];
+              if (!worn.some(c => get.name(c, player) == 'zhuge')) return false;
+              return !player.countCards('h', c => c !== card && get.name(c, player) == 'zhuge');
+            },
             aiReserve(player) {
               const s = player.storage.xd_sijiao;
               return Math.max(2, Array.isArray(s) ? s[1] : 0);
@@ -40227,6 +40239,15 @@ export default function () {
                 if (get.itemtype(card) != 'card' && typeof card?.name != 'string') return;
                 const skill = lib.skill.xd_sijiao;
                 const outcome = skill.aiOutcome(player, card);
+                // 你 11-12：成长两次以后什么能出出什么，下面那些留牌的规矩都不用了；只护着装备区的连弩。
+                if (skill.aiFree(player)) {
+                  if (skill.aiKeepZhuge(player, card)) return 0;
+                  if (num > 0) return outcome == 'grow' ? num + 5 : undefined;
+                  // 酒随便喝：有杀就排在杀前面，没杀也喝。
+                  if (get.name(card, player) == 'jiu') return player.hasSha?.() ? get.order({ name: 'sha' }, player) + 0.2 : 1;
+                  if (outcome == 'grow' && skill.aiFinisher(card, player)) return 5;
+                  return;
+                }
                 // 你 11-02：用掉就成长时，平时顺序为0的牌（如没杀可接的酒）、闪电也用。
                 if (outcome == 'grow' && skill.aiFinisher(card, player)) return num > 0 ? num + 5 : 5;
                 if (num <= 0) return;
@@ -40283,9 +40304,20 @@ export default function () {
                 player(card, player, target) {
                   if (_status.currentPhase !== player || !player.isPhaseUsing?.()) return;
                   const skill = lib.skill.xd_sijiao;
-                  if (!skill.aiFinisher(card, player) || skill.aiOutcome(player, card) != 'grow') return;
+                  if (!skill.aiFinisher(card, player)) return;
+                  const free = skill.aiFree(player);
+                  if (!free && skill.aiOutcome(player, card) != 'grow') return;
                   if (target && target !== player && get.attitude(player, target) > 0 && get.tag(card, 'damage')) return;
-                  return [1, player.storage.xd_sijiao?.[0] === 0 ? 2 : 1.2];
+                  if (!free) return [1, player.storage.xd_sijiao?.[0] === 0 ? 2 : 1.2];
+                  // 你 11-12：成长两次以后每用一张牌都在摸牌、成长，用牌本身就是收益（火攻没中也不亏）。
+                  if (target === player && get.tag(card, 'damage')) return;
+                  const name = get.name(card, player);
+                  if (['nanman', 'wanjian'].includes(name)) {
+                    // 不打坏队友：有 1 血的队友就不加这笔；群攻每个目标都会问一次，摊开算。
+                    if (game.hasPlayer(current => current !== player && get.attitude(player, current) > 0 && current.hp <= 1)) return;
+                    return [1, 1 / Math.max(1, game.countPlayers() - 1)];
+                  }
+                  return [1, 1];
                 }
               }
             },
