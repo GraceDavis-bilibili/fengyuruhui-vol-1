@@ -1,0 +1,62 @@
+/*
+ * 启动页题字微调：只需要改下面这些参数。
+ * 保存后，在游戏启动页点【设置 → 刷新题字样式】查看结果。
+ * 不必重启游戏；刷新样式不会重置雨声或第 8 秒鸡鸣的计时。
+ *
+ * 题字竖排在画面左侧竹林前：右边一列是“风雨如晦（上）”，左边一列是“既见君子 云胡不喜”。
+ *
+ * 字体参考："KaiTi"（系统楷体）、"xinwei"（游戏新魏）、
+ *           "huangcao"（游戏黄草）、"shousha"（游戏手杀字体）。
+ * 未安装或未加载的字体会自动使用后面的备用字体。
+ *
+ * px 是像素。x 为正向右、为负向左；y 为正向下、为负向上。
+ * 字号可以直接写 36px、20px；clamp 写法会随窗口宽度自动缩放。
+ */
+.xd-fy-caption {
+  /* 整组题字距离画面顶部、左边的位置。12% 改成 15% 就会整体下移；5.5% 改大会整体右移。 */
+  --fy-caption-top: 12%;
+  --fy-caption-left: 5.5%;
+
+  /* 第一列（右）：风雨如晦（上） */
+  --fy-title-font: "huangcao", "xinwei", serif;
+  --fy-title-size: clamp(26px, 2.9vw, 50px);
+  --fy-title-x: 0px;
+  --fy-title-y: 0px;
+  --fy-title-spacing: 0.06em;
+  --fy-title-color: #e7dfce;
+
+  /* 第二列（左）：既见君子 云胡不喜 */
+  --fy-poem-font: "huangcao", "xinwei", serif;
+  --fy-poem-size: clamp(15px, 1.6vw, 27px);
+  --fy-poem-x: 0px;
+  --fy-poem-y: 0px;
+  --fy-poem-spacing: 0.12em;
+  --fy-poem-color: #e7dfce;
+
+  /* 两列之间的间距。 */
+  --fy-line-gap: 10px;
+
+  top: var(--fy-caption-top);
+  left: var(--fy-caption-left);
+}
+
+/* 下面负责应用参数，一般不需要修改。 */
+.xd-fy-caption strong {
+  position: relative;
+  left: var(--fy-title-x);
+  top: var(--fy-title-y);
+  font-family: var(--fy-title-font);
+  font-size: var(--fy-title-size);
+  letter-spacing: var(--fy-title-spacing);
+  color: var(--fy-title-color);
+}
+.xd-fy-caption p {
+  position: relative;
+  left: var(--fy-poem-x);
+  top: var(--fy-poem-y);
+  margin-block-start: var(--fy-line-gap);
+  font-family: var(--fy-poem-font);
+  font-size: var(--fy-poem-size);
+  letter-spacing: var(--fy-poem-spacing);
+  color: var(--fy-poem-color);
+}
