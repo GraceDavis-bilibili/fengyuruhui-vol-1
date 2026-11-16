@@ -16,7 +16,7 @@ import { lib, game, ui, get, ai, _status } from "../../noname.js";
 import { installFengyuStartup, createFengyuSplashConfig } from "./assets/startup/index.js";
 export const type = "extension";
 // 构建标记：打包时替换成本次构建的标记。联机开局时房主用它核对各家装的是否同一版本。
-const XD_BUILD_STAMP = "4fd736518043";
+const XD_BUILD_STAMP = "b368b00fcbed";
 const silentSkill = {
   forced: true,
   silent: true,
@@ -4116,7 +4116,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         );
     };
 
-    // V2.7.6：作者补充澄清【醒】有两个互斥入口。
+    // V2.7.6：【醒】有两个互斥入口。
     // 仍有暗置手牌时：先睁眼，再必须选 1 张暗置牌明置并使用；不能空选跳过。
     // 已无任何暗置手牌时：仍可直接发动【醒】，不要求材料，也不经过“确定”按钮；睁眼后因后续无法完成而走“否则”。
     Z.hasAwakeMaterial = player =>
@@ -4456,7 +4456,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             }
             let frame = null;
             if (mode === "awake") {
-                // 作者纠正：发动【醒】时先无条件睁开双眼；有没有牌可明置/可使用，只能在睁眼之后判断。
+                // 发动【醒】时先无条件睁开双眼；有没有牌可明置/可使用，只能在睁眼之后判断。
                 if (!await Z.yes("发动【醒】并睁开双眼？睁眼后再选择要明置并使用的牌。")) {
                     if (Z.blind(player)) return Z.blindRequest(request);
                     continue;
@@ -8802,7 +8802,7 @@ function createXdYujiAi() {
       } catch (e) {}
       return v;
     },
-    // 一组曲兴牌回合末的账：每张即时牌对她的效果（her）。曲兴牌本身不重铸（作者注），持有者回合末不再摸牌，gift 恒为 0。
+    // 一组曲兴牌回合末的账：每张即时牌对她的效果（her）。曲兴牌本身不重铸，持有者回合末不再摸牌，gift 恒为 0。
     tev(player, holder, cards, X, extra = 0) {
       const r = A.tevParts(player, holder, cards, X, extra);
       return r.her + r.gift;
@@ -10361,7 +10361,7 @@ function createXdZhangzhiAi() {
           event.result = plan ? { bool: true, cost_data: [get.translation(plan.type), plan.link] } : { bool: false };
         };
       }
-      // 装的时候本体多半还没把子技能展开成 olbixin_full（发现：所以下面这套出牌打法以前从来没生效），
+      // 装的时候本体多半还没把子技能展开成 olbixin_full，
       // 直接包子技能本身，展开后就是同一个对象。
       const full = lib.skill.olbixin_full || info.subSkill?.full;
       if (full?.ai) {
@@ -24256,7 +24256,7 @@ export default function () {
           }
           for (const node of document.querySelectorAll(".card")) {
             const id = typeof node.name === "string" && node.name.startsWith("group_") ? node.name.slice(6) : null;
-            // 势力牌面大字用繁体（Z 定）；角标与“汉势力”等名称不变。
+            // 势力牌面大字用繁体；角标与“汉势力”等名称不变。
             const label = id && ({ han: "漢", zhan_guo: "戰國" }[id] || factionCardLabels[id]);
             if (!label) {
               if (node.dataset.xdFactionCard) {
@@ -27405,7 +27405,7 @@ export default function () {
                   if (!moved.length) return;
                   player.markSkill?.("xd_yuanyuan");
 
-                  // 作者明确允许指定0人；forced + [0, Infinity] 保留原生“空选后确定”。
+                  // 允许指定0人；forced + [0, Infinity] 保留原生“空选后确定”。
                   const chosen = await player.chooseTarget({
                     prompt: "【冤冤】：选择任意名其他角色（可以不选）；其依原生座次顺序依次视为对你使用【杀】",
                     forced: true,
@@ -27840,7 +27840,7 @@ export default function () {
                 return data;
               }
             },
-            // “合法目标数”严格按作者定义：当前可以被使用者选为此牌目标的角色数。
+            // “合法目标数”：当前可以被使用者选为此牌目标的角色数。
             // 这里不是一张牌“一次能选几个目标”：普通【杀】一次通常只选一人，
             // 但若此刻有7名角色都分别可成为该【杀】的合法目标，则其合法目标数就是7。
             // 【闪】、【无懈可击】在没有角色目标可选时为0；装备、延时锦囊等则按当前真实目标合法性计算。
@@ -29931,7 +29931,7 @@ export default function () {
             },
             // 无名杀对“使用牌的实体材料何时真正进入弃牌堆”有自己的 ordering 结算。
             // 【溯】因此不再每次临时扫弃牌堆来猜顶部，而是在西施回合内维护一个真正按移动时序更新的“有序弃牌堆顶”。
-            // 这也正对应作者所说“只有西施用到了仅限她回合内的有序弃牌堆”。
+            // 只有西施用到了仅限她回合内的有序弃牌堆。
             resetTurnTracking(player) {
               if (!player) return;
               delete player.storage.xd_su_ordered_top;
@@ -31261,7 +31261,7 @@ export default function () {
               let suit, number, finalCard = null;
 
               if (finalWinner === "sky") {
-                // 作者最终口径：若“天”成为最终赢家，直接由此刻牌堆顶的那张牌决定最终花色与点数。
+                // 若“天”成为最终赢家，直接由此刻牌堆顶的那张牌决定最终花色与点数。
                 // 这里不建立 judge 事件，因此任何改判技能都不能介入。
                 finalCard = get.cards(1)?.[0];
                 if (!finalCard) return;
@@ -31344,7 +31344,7 @@ export default function () {
               while (player.isIn()) {
                 const modes = skill.getModes(player);
                 if (!modes.length) {
-                  // 作者确认的极端 IF 彩蛋：屈原始终未负，却已经无人（包括自己）有牌可以继续拼点。
+                  // 极端 IF 彩蛋：屈原始终未负，却已经无人（包括自己）有牌可以继续拼点。
                   // 此时拼点终止，屈原自己成为最终赢家，并仅在这个分支显示隐藏台词。
                   player.popup("得到答案");
                   game.log("天命反侧，何罚何佑？<br><br>天应曰：<br>皇天无私阿兮，览民德焉错辅。<br>终刚强兮不可凌。");
@@ -33658,7 +33658,7 @@ export default function () {
             group: ["xd_xuebian_stage", "xd_xuebian_track", "xd_xuebian_log", "xd_xuebian_after", "xd_xuebian_keep", "xd_xuebian_nosuit"],
             subSkill: {
               backup: {},
-              // 作者注 1：多张牌转化的出其不意无花色，故无法造成伤害。本体按“花色不同”结算，“无”和任何花色都不同，这里拦下。
+              // 多张牌转化的出其不意无花色，故无法造成伤害。本体按“花色不同”结算，“无”和任何花色都不同，这里拦下。
               nosuit: {
                 charlotte: true,
                 forced: true,
@@ -34708,7 +34708,7 @@ export default function () {
               }).slice();
               if (!cards.length) return;
 
-              // 作者注原文："一技能重铸的是你获得的牌、其使用的牌，而非「曲兴」牌"。
+              // 一技能重铸的是获得的牌、其使用的牌，而非「曲兴」牌。
               // 这一轮用掉的都是曲兴牌本身：先记下它们，xd_quxing_engine 在 useCard1 见到就不标记重铸；用完清掉。
               const using = _status._xd_wulan_using || (_status._xd_wulan_using = new Set());
               const added = cards.map(card => card.cardid).filter(id => id && !using.has(id));
