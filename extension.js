@@ -2,11 +2,11 @@
  * 风雨如晦（上）
  *
  * 作者／主创：玄蝶
- * 开发：Chat、
- * 壁纸与界面美术：Chat、
+ * 开发：ChatGPT、Claude
+ * 壁纸与界面美术：ChatGPT、Claude
  * 测试、打磨、AI出牌策略：Grace_Davis
- * 代码贡献：清风（李牧、周公完整代码）、蝶设堂（桓温，经 Chat修改）、无名杀团队
- *   荀淑、张芝、彭羕、孟达、孟获、吴苋、罗宪、张华、王衍基于无名杀本体代码，经 Chat按本作技能修改。
+ * 代码贡献：清风（李牧、周公完整代码）、蝶设堂（桓温，经 ChatGPT 修改）、无名杀团队
+ *   荀淑、张芝、彭羕、孟达、孟获、吴苋、罗宪、张华、王衍基于无名杀本体代码，经 ChatGPT 按本作技能修改。
  *
  * 代码按其适用的开源许可使用；壁纸与界面美术不随代码授权，转载或二改请注明出处。
  * 部分素材来自网络，版权归原作者所有，如有侵权请联系删除。
@@ -16,7 +16,7 @@ import { lib, game, ui, get, ai, _status } from "../../noname.js";
 import { installFengyuStartup, createFengyuSplashConfig } from "./assets/startup/index.js";
 export const type = "extension";
 // 构建标记：打包时替换成本次构建的标记。联机开局时房主用它核对各家装的是否同一版本。
-const XD_BUILD_STAMP = "40ac0baa18e4";
+const XD_BUILD_STAMP = "4fd736518043";
 const silentSkill = {
   forced: true,
   silent: true,
@@ -1221,7 +1221,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             :host { all:initial!important; position:fixed!important; inset:0!important; z-index:2147483600!important;
                 display:block!important; pointer-events:auto!important; font:15px/1.65 Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif!important;
                 color:#243d4b!important; }
-            **::before,*::after { box-sizing:border-box!important; }
+            *,*::before,*::after { box-sizing:border-box!important; }
             .backdrop { position:absolute!important; inset:0!important; display:flex!important; align-items:center!important; justify-content:center!important;
                 padding:24px!important; background:rgba(9,18,24,.52)!important; backdrop-filter:blur(2px)!important; }
             .panel { --story-content-height:calc(min(78vh,760px) - 50px); position:relative!important; width:min(760px,92vw)!important;
@@ -2099,7 +2099,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             :host {all:initial!important;position:fixed!important;top:33vh!important;left:53vw!important;
                 width:min(26vw,365px)!important;max-height:min(43vh,390px)!important;z-index:2147481000!important;
                 display:block!important;pointer-events:none!important;font:13px/1.55 "Microsoft YaHei","Noto Sans CJK SC",sans-serif!important;}
-            **::before,*::after {box-sizing:border-box!important;}
+            *,*::before,*::after {box-sizing:border-box!important;}
             .xd-zz-v226-panel {width:100%!important;max-height:min(43vh,390px)!important;overflow:hidden!important;
                 padding:8px 12px 10px!important;border:0!important;border-left:2px solid rgba(213,194,153,.8)!important;
                 border-radius:7px 12px 12px 7px!important;
@@ -2541,7 +2541,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
                 font:15px/1.4 Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif!important;
                 color:#24485c!important; isolation:isolate!important;
             }
-            **::before,*::after {box-sizing:border-box!important;}
+            *,*::before,*::after {box-sizing:border-box!important;}
             button,input {font:inherit!important; letter-spacing:normal!important; text-transform:none!important;}
             button {appearance:none!important; -webkit-appearance:none!important; flex-shrink:0!important;}
             .xd-zz-v216-backdrop {width:100%!important;height:100%!important;}
