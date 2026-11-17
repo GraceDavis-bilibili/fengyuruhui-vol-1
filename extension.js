@@ -16,7 +16,7 @@ import { lib, game, ui, get, ai, _status } from "../../noname.js";
 import { installFengyuStartup, createFengyuSplashConfig } from "./assets/startup/index.js";
 export const type = "extension";
 // 构建标记：打包时替换成本次构建的标记。联机开局时房主用它核对各家装的是否同一版本。
-const XD_BUILD_STAMP = "649444b8e942";
+const XD_BUILD_STAMP = "92c08e4cb08e";
 const silentSkill = {
   forced: true,
   silent: true,
@@ -39352,6 +39352,12 @@ export default function () {
             },
             filter(event, player) {
               if (!player.countCards("he")) return false;
+              // 电脑在无懈询问里只按 hiddenWuxie 挑好的那一次印无懈（同一次询问）；没挑出底牌的无懈询问不发动，
+              // 手里有真无懈时由本体照常决定出不出真的。
+              if (event?.type === "wuxie" && !lib.skill.xd_ai_core.humanActing(player)) {
+                const plan = player._xd_fuding_aiPlan;
+                if (!plan || plan.name !== "wuxie" || !plan.info || plan.info !== event.info_map) return false;
+              }
               return lib.skill.xd_fuding.getLegalVCards(event, player).length > 0;
             },
             getBottomCards(card, event, player) {
@@ -40534,8 +40540,9 @@ export default function () {
               }
               return null;
             },
-            // 回合外印无懈：电脑只为自己头上的乐、兵粮印（见 aiWuxieBottom），
-            // 别人头上的、别的锦囊都不印（印完要锁一整轮）。本体决定问不问无懈只看这个函数。
+            // 回合外印无懈：自己头上的乐、兵粮按 aiWuxieBottom 挑底牌；别的无懈询问，印完三项全欠，
+            // 只在付掉底牌以后还配得出下次一下还清三项的脱困牌时印（aiGatePick，和印闪替队友挡同一道关），
+            // 出不出由本体的无懈账决定。本体决定问不问无懈只看这个函数。
             // 真人：能印无懈就弹询问——不欠任何项、手里有牌。欠"点""字"印不了；欠"标"时底牌只能是无懈，手里有真无懈本来就会被问。
             hiddenWuxie(player, info) {
               const skill = lib.skill.xd_fuding;
@@ -40545,8 +40552,13 @@ export default function () {
               try {
                 bottom = skill.aiWuxieBottom(player, info);
               } catch (e) {}
+              if (!bottom && !skill.getRequired(player).length) {
+                try {
+                  bottom = skill.aiGatePick(player, 7)?.bottom || null;
+                } catch (e) {}
+              }
               if (!bottom) return false;
-              player._xd_fuding_aiPlan = { name: "wuxie", nature: null, bottoms: [bottom], targets: [], score: 1, order: 0 };
+              player._xd_fuding_aiPlan = { name: "wuxie", nature: null, bottoms: [bottom], targets: [], score: 1, order: 0, info };
               return true;
             },
             hiddenCard(player, name) {
