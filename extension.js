@@ -16,7 +16,7 @@ import { lib, game, ui, get, ai, _status } from "../../noname.js";
 import { installFengyuStartup, createFengyuSplashConfig } from "./assets/startup/index.js";
 export const type = "extension";
 // 构建标记：打包时替换成本次构建的标记。联机开局时房主用它核对各家装的是否同一版本。
-const XD_BUILD_STAMP = "92c08e4cb08e";
+const XD_BUILD_STAMP = "d1a3240ffd37";
 const silentSkill = {
   forced: true,
   silent: true,
@@ -82,9 +82,9 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     Z.blind = player =>
         Z.owns(player) && Z.state(player).closed === 2;
 
+    // 联机时只在庄周本人的电脑上为真；房主替别人电脑上的庄周结算，不画梦境。
     Z.local = player =>
         player === game.me &&
-        !_status.connectMode &&
         Z.owns(player);
 
     Z.alive = player =>
@@ -3140,6 +3140,8 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
 
         Z.state(player).closed =
             Math.max(0, Math.min(2, count));
+        if (player === game.me) Z.olShownClosed = Z.state(player).closed;
+        else Z.olPushEyes(player);
 
         player.markSkill("xd_mei");
         // 只在真正开始新一段双眼闭合时重新抽签；单眼变化不提前刷新意象。
@@ -3370,6 +3372,13 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             Z.v243SyncAwakeButtons?.(player);
         }
 
+        // 联机时庄周本人的电脑先在本机睁眼，好看清手牌；真正的发动由房主结算。
+        if (Z.olClient()) {
+            frame.olClient = true;
+            if (mode === "awake") Z.olSend("awake");
+            return frame;
+        }
+
         player.logSkill(
             mode === "dream" ? "xd_meng" : "xd_xing"
         );
@@ -3394,6 +3403,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     Z.finish = frame => {
         if (!frame || frame.finished) return;
         frame.finished = true;
+        if (frame.olClient) Z.olSend("awakeEnd", { fail: !!frame.nextLock });
         // 【醒】结算完毕时解除只在本次原生选牌期间启用的取消监听，
         // 避免把其它武将或其它询问的取消事件带进来。
         Z.v229DisarmCancel?.(frame);
@@ -3798,13 +3808,17 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         // 同一次发动即使经多个事件检查也只记录一次。
         if (!frame._xd_zz_lockLogged) {
             frame._xd_zz_lockLogged = true;
-            game.log(frame.player, "下次仅能发动【" +
+            if (!frame.olClient) game.log(frame.player, "下次仅能发动【" +
                 (nextLock === "dream" ? "梦" : "醒") + "】");
         }
     };
 
     Z.expel = async (player, reason) => {
         if (!Z.alive(player)) return;
+        if (Z.olClient()) {
+            Z.olExpelFirst(player, reason);
+            return;
+        }
         // 测试模式统一拦住违规退场，包含火攻和延后发现的错误牌。
         if (Z.v274SafeTestMode) {
             Z.v2Notice("TEST INVALID（仅提示，不判负）：" + reason);
@@ -4510,7 +4524,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             if (/^VALID/.test(text)) return;
             if (/^UNSUPPORTED/.test(text)) text = "这次闭眼操作无法判断是否合规，不处罚也不提交；请换一张牌或取消。";
         }
-        try { game.log(Z.v274SafeTestMode ? "【庄周V2测试】" : "【庄周】", text); } catch (e) {}
+        try { Z.olLocalLog(Z.v274SafeTestMode ? "【庄周V2测试】" : "【庄周】", text); } catch (e) {}
     };
     Z.v2EnsureStyle = () => {
         if (typeof document === "undefined" || document.getElementById("xd-zz-v2-proto-style")) return;
@@ -5279,6 +5293,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             session.destroyed = true;
             ui.arena?.classList.remove("xd-zz-v2-proto-active");
             Z.v2Debug("INVALID closed-eye action", debugStage, verdict);
+            Z.olExpelFirst(player, "闭眼提交的用牌/响应不符合真实游戏规则");
             ui.click.cancel();
             Promise.resolve().then(() => Z.expel(player, "闭眼提交的用牌/响应不符合真实游戏规则"));
         };
@@ -5484,6 +5499,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             // 选择本身允许发生，直到提交时才检查真实花色；错误就是闭眼规则违规。
             // 仅在以后明确关闭测试模式时执行正式违规退场。
             restore();
+            Z.olExpelFirst(player, "闭眼结算【火攻】时弃置了与目标展示牌花色不符的牌");
             ui.click.cancel(Z.v307ConfirmButton());
             Promise.resolve().then(() => Z.expel(player, "闭眼结算【火攻】时弃置了与目标展示牌花色不符的牌"));
         };
@@ -5601,6 +5617,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             }
             // 摸到的牌本身不合规（如弃掉唯一的贯石斧）：与火攻、闭眼出牌一致，属于闭眼违规，判负离场。
             restore();
+            Z.olExpelFirst(player, "闭眼弃牌时选中了不符合要求的牌");
             ui.click.cancel(Z.v307ConfirmButton());
             Promise.resolve().then(() => Z.expel(player, "闭眼弃牌时选中了不符合要求的牌"));
         };
@@ -5696,6 +5713,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
                 return;
             }
             Z.v308TeardownMuniu();
+            Z.olExpelFirst(player, "闭眼移动木牛流马时选了不能接收的角色");
             ui.click.cancel(Z.v307ConfirmButton());
             Promise.resolve().then(() => Z.expel(player, "闭眼移动木牛流马时选了不能接收的角色"));
         };
@@ -5837,6 +5855,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     };
     Z.v297SilentCardReason = (player, event) => {
         if (!Z.v281MuteGainFeedback() || !player || player === game.me || !event) return "";
+        if (event._olCtx) return event._olCtx.silent && player === event.player ? event._olCtx.silent : "";
         if (Z.v297SelfEquipUse(event, player)) return "equip";
         // equip 内替换旧装备的动画也无需口述；真实装备区另由 CSS 遮蔽。
         if (event.name === "equip" && event.player === player) return "equip";
@@ -5881,6 +5900,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     Z.v299IsJudgeDisplay = (card, event) => {
         // 睁眼时也可以标记副本，以便本次判定途中闭眼；CSS 只在闭眼本机生效。
         if (!Z.v2proto || Z.ended || !Z.local(game.me) || !card || !event) return false;
+        if (event._olCtx) return card.cardid != null && event._olCtx.judgeIds.includes(card.cardid);
         if (event.name === "judge") return !!event.player?.judging?.includes(card);
         // 原生鬼才等改判通过 highlighted respond 展示替换牌，不遮蔽其他普通响应/用牌。
         return event.name === "respond" && event.highlight === true &&
@@ -5944,13 +5964,14 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         }
     };
     // 白名单：本次 $throwordered 抛出的副本，正是其他角色这次使用/打出的实体牌之一。
-    Z.v309IsHeardEvent = event => !!(
+    Z.v309IsHeardEvent = event => event?._olCtx ? !!event._olCtx.heard : !!(
         event && ["useCard", "respond"].includes(event.name) && event.player && event.player !== game.me &&
         // 改判（高亮打出）会泄露判定，沿用 v299 的判定遮蔽；别人给自己穿装备沿用 v297“未口述”。
         !event.highlight && !Z.v297SelfEquipUse?.(event, event.player)
     );
     // 转化牌（如武圣把桃当杀）：被口述的是“杀”，底下的实体牌不公开。判定与本体 equip/addJudge 用同一标准。
     Z.v309Converted = event => {
+        if (event?._olCtx) return !!event._olCtx.converted;
         const cards = event?.cards || [];
         return !event?.card || cards.length !== 1 || cards[0]?.name !== event.card.name || !event.card.isCard;
     };
@@ -5984,7 +6005,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     };
     Z.v309MaybeUnveilHeard = (owner, node) => {
         if (!node?._xd_zz_v309) return;
-        const event = get.event?.();
+        const event = Z.olViewEvent();
         if (!Z.v309IsHeardEvent(event) || Z.v297SilentCardReason(owner, event)) return;
         const cards = event.cards || [];
         const id = node._cardid;
@@ -6008,7 +6029,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     if (typeof PP.tryCardAnimate === "function") {
         const nativeTryCardAnimate = PP.tryCardAnimate;
         PP.tryCardAnimate = function (...args) {
-            const event = get.event?.();
+            const event = Z.olViewEvent();
             if (Z.v309Blind() && event && ["useCard", "respond"].includes(event.name) && event.player === this &&
                 !Z.v309IsHeardEvent(event)) return;
             return nativeTryCardAnimate.apply(this, args);
@@ -6076,7 +6097,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     if (typeof CP?.copy === "function") {
         const nativeCopy = CP.copy;
         CP.copy = function (...args) {
-            const judge = Z.v299IsJudgeDisplay(this, get.event?.());
+            const judge = Z.v299IsJudgeDisplay(this, Z.olViewEvent());
             const clone = nativeCopy.apply(this, args);
             // 只改返回的动画/展示副本，不标记实体牌，也不修改判定属性与结果。
             if (judge && clone && clone !== this) clone.classList?.add?.("xd-zz-v299-judge-card");
@@ -6089,7 +6110,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         PP.popup = function (name, ...args) {
             // 本体的判定结果浮字也是视觉信息；真实判定结果、广播与技能宣告均不改。
             if (this !== game.me && Z.v281MuteGainFeedback() &&
-                (name === "判定生效" || name === "判定失效") && get.event?.()?.name === "judge") return;
+                (name === "判定生效" || name === "判定失效") && Z.olViewEvent()?.name === "judge") return;
             return nativePopup.call(this, name, ...args);
         };
     }
@@ -6097,7 +6118,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         const native = PP[method];
         if (typeof native !== "function") continue;
         PP[method] = function (node, ...rest) {
-            if (Z.v297SilentCardReason(this, get.event?.())) Z.v297MaskSilentClone(node);
+            if (Z.v297SilentCardReason(this, Z.olViewEvent())) Z.v297MaskSilentClone(node);
             Z.v309MaybeUnveilHeard(this, node);
             return native.call(this, node, ...rest);
         };
@@ -6105,7 +6126,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     if (typeof PP.$throw === "function") {
         const nativeThrow = PP.$throw;
         PP.$throw = function (cards, ...rest) {
-            const reason = Z.v297SilentCardReason(this, get.event?.());
+            const reason = Z.v297SilentCardReason(this, Z.olViewEvent());
             const result = nativeThrow.call(this, cards, ...rest);
             if (reason) {
                 Z.v297MaskSilentClone(result);
@@ -6287,13 +6308,13 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
     if (typeof ui?.create?.dialog === "function") {
         const nativeCreateDialog = ui.create.dialog;
         ui.create.dialog = function (...args) {
-            const event = get.event?.();
+            const event = Z.olViewEvent();
             const wuxie = Z.v296LocalWuxie(event) && typeof args[0] === "string" && args[0] === event.prompt;
             const original = args[0];
             if (wuxie && !Z.ended && Z.blind(event.player)) args[0] = Z.v296DreamWuxiePrompt(event);
             const dialog = nativeCreateDialog.apply(this, args);
             if (event?.name === "judge" && Z.v2proto && !Z.ended && Z.local(game.me) &&
-                args[0] === `${get.translation(event.player)}的${event.judgestr}判定`) {
+                args[0] === (event._olCtx?.judgeDialog || `${get.translation(event.player)}的${event.judgestr}判定`)) {
                 // 本体的判定展示窗无选择按钮；隐藏本机显示，不改变窗口或录像的生命周期。
                 dialog?.classList?.add?.("xd-zz-v299-judge-dialog");
             }
@@ -7002,6 +7023,547 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
         return (Z?.nativeOver || game.over).apply(this, args);
     };
 
+    // ── 联机 ──
+    // 房主跑全部规则，也替不在房主电脑上的庄周结算；梦境界面和闭眼选牌只在庄周本人的电脑上。
+    // 庄周本人的电脑上会改变局面的操作（违规退场、【醒】先睁眼、【醒】落空）发给房主执行，
+    // 房主再把闭眼庄周听得到的战报、用牌和伤害单独发给他。单机不走这里。
+    Z.olClient = () => !!(_status.connectMode && game.online);
+    Z.olHost = () => !!(_status.connectMode && !game.online);
+    Z.olSend = (kind, data) => {
+        try { game.send("xd_zhuangzhou", kind, data || {}); } catch (e) {}
+    };
+    // 违规时先发判负再关掉询问，房主就会在收到这次的选择之前处理判负。
+    Z.olExpelFirst = (player, reason) => {
+        if (!Z.olClient() || player !== game.me || player._xd_zz_olExpelSent) return;
+        player._xd_zz_olExpelSent = true;
+        Z.olSend("expel", { reason: String(reason || "") });
+    };
+    if (lib.message?.server) {
+        lib.message.server.xd_zhuangzhou = function (kind, data) {
+            const Z = lib.xd_utils?.zhuangzhou;
+            const player = lib.playerOL?.[this.id];
+            if (!Z || game.online || !player || !Z.owns(player)) return;
+            Z.olReceive(player, kind, data || {});
+        };
+    }
+    Z.olReceive = (player, kind, data) => {
+        if (Z.ended || !Z.alive(player)) return;
+        if (kind === "expel") {
+            Z.expel(player, String(data.reason || "").slice(0, 60) || "闭眼操作不符合真实游戏规则");
+            return;
+        }
+        if (kind === "awake") {
+            // 找到房主这边正在等他回答的那次出牌询问。
+            let request = _status.event;
+            for (let i = 0; request && i < 4 && !(request.name === "chooseToUse" && request.player === player); i++) {
+                const parent = request.getParent?.();
+                if (!parent || parent === request) break;
+                request = parent;
+            }
+            if (!request || request.name !== "chooseToUse" || request.player !== player) return;
+            const pending = player._xd_zz_pendingAwake;
+            if (pending?.request === request && !pending.cancelled && !pending.frame?.finished) return;
+            if (!Z.allowed(player, "awake") || Z.state(player).closed <= 0) return;
+            const frame = Z.begin(player, "awake");
+            player._xd_zz_pendingAwake = { request, frame };
+            return;
+        }
+        if (kind === "awakeEnd") {
+            const pending = player._xd_zz_pendingAwake;
+            if (!pending?.frame || pending.frame.finished) return;
+            if (data.fail) Z.fail(pending.frame);
+            Z.finish(pending.frame);
+        }
+    };
+
+    // 庄周本人的电脑：房主同步来睁闭眼后，照单机 Z.eyes 的做法开关梦境界面。
+    Z.olShownClosed = 0;
+    Z.olSynced = (player, keys) => {
+        if (!Z.olClient() || player !== game.me || !Z.owns(player)) return;
+        const pending = player._xd_zz_pendingAwake;
+        if (pending && (pending.request?.finished || pending.frame?.finished)) {
+            Z.v229DisarmCancel?.(pending.frame);
+            delete player._xd_zz_pendingAwake;
+        }
+        if (!keys.includes("xd_zhuangzhou_state")) return;
+        const state = Z.state(player);
+        const now = state.closed;
+        const before = Z.olShownClosed;
+        if (now !== before) {
+            // 退回本机上一次的眼睛状态，再走一遍单机的睁闭眼（记下手牌、装备顺序和座位，开关梦境）。
+            state.closed = before;
+            try { Z.rememberSeats(); } catch (e) {}
+            Z.eyes(player, now);
+            return;
+        }
+        Z.refresh();
+        Z.v243SyncAwakeButtons?.(player);
+    };
+    Z.olEyesPushed = (player, closed) => {
+        if (!Z.olClient() || player !== game.me || !Z.owns(player)) return;
+        Z.state(player).closed = closed;
+        Z.olSynced(player, ["xd_zhuangzhou_state"]);
+    };
+    Z.olRefreshPushed = () => {
+        if (!Z.olClient() || !game.me || !Z.owns(game.me)) return;
+        Z.refresh();
+    };
+
+    // 房主：不在房主电脑上的庄周；其中正闭着双眼的另算。
+    Z.olRemote = () => {
+        if (!Z.olHost() || Z.ended || !lib.node?.clients) return [];
+        return game.players.filter(player =>
+            player !== game.me && player.ws && !player.ws.closed && Z.owns(player) && Z.alive(player));
+    };
+    Z.olViewers = () => Z.olRemote().filter(player => Z.blind(player));
+    // 房主：别人电脑上的庄周睁眼闭眼后立刻告诉他，之后的动画到他那边时已按新的眼睛状态显示。
+    Z.olPushEyes = player => {
+        if (!Z.olHost() || player === game.me || !player?.ws || player.ws.closed || !Z.owns(player)) return;
+        player.send((player, closed) => lib.xd_utils?.zhuangzhou?.olEyesPushed?.(player, closed),
+            player, Z.state(player).closed);
+    };
+    // 房主：有人阵亡或技能变动后，单机会把庄周的界面整体刷新一次；别人电脑上的庄周也照做，
+    // 阵亡的庄周本人那边借此收起梦境。
+    Z.olPushRefresh = trigger => {
+        const list = Z.olRemote();
+        const dead = trigger?.player;
+        if (Z.olHost() && dead && dead !== game.me && dead.ws && !dead.ws.closed && Z.owns(dead) && !list.includes(dead)) list.push(dead);
+        for (const player of list) player.send(() => lib.xd_utils?.zhuangzhou?.olRefreshPushed?.());
+    };
+    // 房主自己是闭眼庄周、又有客机在场。
+    Z.olHostBlind = () => !!(Z.olHost() && lib.node?.clients?.length && Z.v281MuteGainFeedback());
+    // 按某位庄周的视角判断（单机的判断都以本机的 game.me 为“自己”）。
+    Z.olAs = (player, fn) => {
+        const me = game.me;
+        try {
+            game.me = player;
+            return fn();
+        } finally {
+            game.me = me;
+        }
+    };
+    Z.olEventIds = new WeakMap();
+    Z.olEventSerial = 0;
+    Z.olEventId = event => {
+        let id = Z.olEventIds.get(event);
+        if (!id) Z.olEventIds.set(event, id = ++Z.olEventSerial);
+        return id;
+    };
+    Z.olPid = player => player?.playerid || null;
+    Z.olCardInfo = (card, player) => {
+        if (!card) return null;
+        let name = card.name;
+        try { name = get.name(card, player) || name; } catch (e) {}
+        return { name, nature: card.nature || "", isCard: !!card.isCard };
+    };
+
+    // 房主的广播：庄周本人的电脑在收到动画之前，先知道房主此刻在结算什么
+    // （谁用了什么牌、这张牌他听不听得见、是不是判定、是不是不该让他看见的牌），
+    // 他那边才能像单机一样决定哪些牌面揭开、哪些遮住。
+    Z.olMuteBroadcast = false;
+    Z.olBroadcastCount = 0;
+    Z.olCtxSent = new WeakMap();
+    Z.olCtxFor = (player, event) => {
+        if (!event) return null;
+        const ids = cards => (Array.isArray(cards) ? cards : []).map(card => card?.cardid).filter(id => id != null);
+        return Z.olAs(player, () => {
+            const silent = Z.v297SilentCardReason(event.player, event) || "";
+            if (!["useCard", "respond", "judge"].includes(event.name) && !silent) return null;
+            const heard = Z.v309IsHeardEvent(event);
+            let judgeIds = [];
+            if (event.name === "judge") judgeIds = ids(event.player?.judging);
+            else if (event.name === "respond" && event.highlight === true && Z.v299JudgeEvent(event)) judgeIds = ids(event.cards);
+            return {
+                id: Z.olEventId(event),
+                name: event.name,
+                player: Z.olPid(event.player),
+                targets: (Array.isArray(event.targets) ? event.targets : []).map(Z.olPid).filter(Boolean),
+                highlight: !!event.highlight,
+                judgestr: event.judgestr || "",
+                judgeDialog: event.name === "judge" ? `${get.translation(event.player)}的${event.judgestr}判定` : "",
+                heard,
+                converted: heard ? !!Z.v309Converted(event) : false,
+                silent,
+                judgeIds,
+                cardIds: ids(event.cards),
+                card: Z.olCardInfo(event.card, event.player),
+            };
+        });
+    };
+    Z.olSyncCtx = (player, client, event) => {
+        let ctx = null;
+        try {
+            ctx = Z.olCtxFor(player, event);
+        } catch (e) {
+            ctx = null;
+        }
+        const sig = ctx ? JSON.stringify(ctx) : "";
+        if ((Z.olCtxSent.get(client) ?? "") === sig) return;
+        Z.olCtxSent.set(client, sig);
+        client.send(ctx => lib.xd_utils?.zhuangzhou?.olSetCtx?.(ctx), ctx);
+    };
+    // 【火攻】展示牌：闭眼庄周看到的是空白牌和不带姓名的说明，其他人照常。
+    // 本体 showCards 的两次广播：(函数, 编号, 说明, 牌) 建窗口；(函数, 建按钮函数, 隐藏的牌, 编号, 按钮函数, 事件) 处理按钮。
+    Z.olShowArgs = (plan, event, client, args) => {
+        const blind = plan.blind.has(client);
+        const out = args.slice();
+        if (out[1] === event.videoId && out[2] === event.str) out[2] = blind ? plan.blindStr : plan.openStr;
+        else if (out[3] === event.videoId && out[5] === event) out[2] = blind ? plan.blindHidden : plan.openHidden;
+        return out;
+    };
+    if (typeof game.broadcast === "function") {
+        Z.olNativeBroadcast = game.broadcast;
+        game.broadcast = function (...args) {
+            const Z = lib.xd_utils?.zhuangzhou;
+            if (Z.olHost()) Z.olBroadcastCount++;
+            if (Z.olMuteBroadcast) {
+                Z.olMuteBroadcast = false;
+                return;
+            }
+            if (!Z.olHost() || !lib.node?.clients) return Z.olNativeBroadcast.apply(this, args);
+            let remote = [], event = null, plan = null;
+            try {
+                remote = Z.olRemote();
+                event = get.event?.();
+                plan = event?._xd_zz_olShow || null;
+            } catch (e) {
+                remote = [];
+                plan = null;
+            }
+            if (!remote.length && !plan) return Z.olNativeBroadcast.apply(this, args);
+            for (const client of lib.node.clients) {
+                if (!client.inited) continue;
+                const zhuangzhou = remote.find(player => player.ws === client);
+                if (zhuangzhou) Z.olSyncCtx(zhuangzhou, client, event);
+                client.send(...(plan ? Z.olShowArgs(plan, event, client, args) : args));
+            }
+        };
+    }
+
+    // 战报：和本体 game.log 拼字的办法相同，给其他客机照常显示。
+    Z.olFormat = args => {
+        let str = "", str2 = "";
+        const color = { r: "fire", y: "yellow", g: "green", b: "blue" };
+        for (const value of args) {
+            const type = get.itemtype(value);
+            if (type == "player" || type == "players" || type == "cards" || type == "card" ||
+                (typeof value == "object" && value && value.name)) {
+                const cls = type == "player" || type == "players" ? "bluetext" : "yellowtext";
+                str += '<span class="' + cls + '">' + get.translation(value) + "</span>";
+                str2 += get.translation(value);
+            } else if (typeof value == "object") {
+                if (value?.parentNode != ui.historybar) {
+                    str += get.translation(value);
+                    str2 += get.translation(value);
+                }
+            } else if (typeof value == "string") {
+                if (value[0] == "【" && value[value.length - 1] == "】") {
+                    str += '<span class="greentext">' + get.translation(value) + "</span>";
+                    str2 += get.translation(value);
+                } else if (value[0] == "#") {
+                    str += '<span class="' + (color[value[1]] || "") + 'text">' + get.translation(value.slice(2)) + "</span>";
+                    str2 += get.translation(value.slice(2));
+                } else {
+                    str += get.translation(value);
+                    str2 += get.translation(value);
+                }
+            } else {
+                str += value;
+                str2 += value;
+            }
+        }
+        return [str, str2];
+    };
+    // 闭眼庄周看到的这一行：和单机闭眼时的战报过滤相同，“自己”换成这位庄周。
+    Z.olLogFor = (player, args, event) => Z.olAs(player, () => {
+        if (event?.name === "respond" && event.highlight && args[1] === "打出了") return null;
+        let out;
+        if (["equip", "addJudge"].includes(event?.name)) {
+            const use = event.getParent?.("useCard");
+            if (use && !Z.v309IsHeardEvent(use)) return null;
+            out = Z.v309SanitizeLog(args, use || event);
+        } else out = Z.v309SanitizeLog(args, event);
+        return out.filter(value => !(value && typeof value === "object" && value.parentNode === ui.historybar));
+    });
+    // 把一行战报发给各客机：闭眼庄周收到过滤后的一行（仍带角色，他那边的梦闻才认得出是谁发动了技能），
+    // 其他客机收到完整的一行（闭眼庄周背面弃牌照样只写张数）。
+    Z.olLogToClients = (args, event) => {
+        const viewers = Z.olViewers();
+        let open = args, blind = args;
+        if (open[1] === "弃置了" && Array.isArray(open[2]) && open[2].length &&
+            open[0] === event?.player && Z.v306FaceDownDiscard(event)) {
+            open = open.slice();
+            open[2] = get.cnNumber(open[2].length) + "张牌";
+        }
+        // 【火攻】展示牌：其他人照常看到展示了哪张牌；闭眼庄周和单机一样，这一行不带牌。
+        const plan = event?._xd_zz_olShow;
+        if (plan && args[1] === "展示了" && Array.isArray(args[2])) {
+            open = [args[0], args[1], plan.cards.slice()].concat(args.slice(3));
+            blind = [args[0], args[1], []].concat(args.slice(3));
+        }
+        const [str, str2] = Z.olFormat(open);
+        for (const client of lib.node.clients) {
+            if (!client.inited || viewers.some(player => player.ws === client)) continue;
+            client.send((str, str2) => game.log(lib.config.log_highlight ? str : str2), str, str2);
+        }
+        for (const player of viewers) {
+            const line = Z.olLogFor(player, blind.slice(), event);
+            if (line) player.send((...line) => game.log(...line), ...line);
+        }
+    };
+    // 只写在本机的提示（如闭眼操作提醒），不发给客机。
+    Z.olLocalOnly = false;
+    Z.olLocalLog = (...args) => {
+        if (!Z.olHost()) return game.log(...args);
+        Z.olLocalOnly = true;
+        try {
+            return game.log(...args);
+        } finally {
+            Z.olLocalOnly = false;
+        }
+    };
+    if (typeof game.log === "function") {
+        Z.olInnerLog = game.log;
+        game.log = function (...args) {
+            const Z = lib.xd_utils?.zhuangzhou;
+            const local = !!Z?.olLocalOnly;
+            const viewers = Z?.olViewers?.() || [];
+            if (!local && !viewers.length && !Z?.olHostBlind?.()) return Z.olInnerLog.apply(this, args);
+            const event = get.event?.();
+            let result;
+            Z.olMuteBroadcast = true;
+            try {
+                result = Z.olInnerLog.apply(this, args);
+            } finally {
+                Z.olMuteBroadcast = false;
+            }
+            if (!local) {
+                try {
+                    Z.olLogToClients(args, event);
+                } catch (e) {
+                    console.warn("[庄周] 联机战报发送失败", e);
+                }
+            }
+            return result;
+        };
+    }
+
+    // 房主自己闭眼时，单机那套“本机不显示”会连带不发给客机；这些动画仍照常发给其他客机。
+    Z.olKeepForOthers = (name, send) => {
+        const inner = PP[name];
+        if (typeof inner !== "function") return;
+        PP[name] = function (...args) {
+            const Z = lib.xd_utils.zhuangzhou;
+            if (!Z.olHostBlind()) return inner.apply(this, args);
+            const before = Z.olBroadcastCount;
+            const result = inner.apply(this, args);
+            if (Z.olBroadcastCount === before) send.call(this, args);
+            return result;
+        };
+    };
+    Z.olKeepForOthers("tryCardAnimate", function (args) {
+        game.broadcast(function (player, card, name, nature, popname) {
+            player.tryCardAnimate(card, name, nature, popname);
+        }, this, args[0], args[1], args[2], args[3]);
+    });
+    Z.olKeepForOthers("popup", function (args) {
+        const text = get.translation(args[0]);
+        if (!text || args[2] === false) return;
+        game.broadcast(function (player, num, nature, font) {
+            player.$damagepop(num, nature, font);
+        }, this, text, args[1] || "water", true);
+    });
+    Z.olKeepForOthers("$gain2", function (args) {
+        let cardsetion = args[2];
+        if (!cardsetion && cardsetion !== false && lib.config.card_animation_info) cardsetion = get.cardsetion(this);
+        if (args[1] === true) Z.olLogToClients([this, "获得了", args[0]], get.event?.());
+        game.broadcast(function (player, cards, cardsetion) {
+            player.$gain2(cards, null, cardsetion);
+        }, this, args[0], cardsetion);
+    });
+    Z.olKeepForOthers("$giveAuto", function (args) {
+        game.broadcast(function (source, ...rest) {
+            source.$giveAuto(...rest);
+        }, this, ...args);
+    });
+    // 【火攻】展示牌：房主按闭眼庄周和其他人分别准备说明和空白牌，广播时分发。
+    if (typeof PP.showCards === "function") {
+        Z.olInnerShowCards = PP.showCards;
+        PP.showCards = function (...args) {
+            const Z = lib.xd_utils.zhuangzhou;
+            const next = Z.olInnerShowCards.apply(this, args);
+            if (!Z.olHost() || !next || !Array.isArray(next.cards) || !next.cards.length ||
+                !Z.v284IsDirectHuogongChild?.(next)) return next;
+            const viewers = Z.olViewers();
+            const hostHidden = !!next._xd_zz_v284HuogongHiddenReveal;
+            if (!viewers.length && !hostHidden) return next;
+            const given = typeof args[0] === "string" ? args[0] : args[1];
+            next._xd_zz_olShow = {
+                cards: next.cards.slice(),
+                blind: new Set(viewers.map(player => player.ws)),
+                blindStr: "【火攻】目标展示了一张牌（牌面不可见）",
+                blindHidden: next.cards.slice(),
+                openStr: typeof given === "string" && given ? given : get.translation(this.name) + "展示的牌",
+                openHidden: null,
+            };
+            return next;
+        };
+    }
+
+    // 庄周本人的电脑：记下房主此刻在结算的事件。房主广播来的动画（exec）执行期间，
+    // 单机按“当前事件”做的显示判断改看这份记录；本机自己的选择照旧看本机事件。
+    Z.olCtx = null;
+    Z.olInBroadcast = 0;
+    Z.olSetCtx = ctx => {
+        if (Z.olClient()) Z.olCtx = ctx || null;
+    };
+    if (typeof lib.message?.client?.exec === "function") {
+        Z.olNativeExec = lib.message.client.exec;
+        lib.message.client.exec = function (...args) {
+            const Z = lib.xd_utils?.zhuangzhou;
+            if (!Z?.olClient?.()) return Z.olNativeExec.apply(this, args);
+            Z.olInBroadcast++;
+            try {
+                return Z.olNativeExec.apply(this, args);
+            } finally {
+                Z.olInBroadcast--;
+            }
+        };
+    }
+    Z.olPseudo = null;
+    Z.olViewEvent = () => {
+        if (!(Z.olInBroadcast > 0 && Z.olClient())) return get.event?.();
+        const ctx = Z.olCtx;
+        if (!ctx) return null;
+        if (Z.olPseudo?._olCtx === ctx) return Z.olPseudo;
+        const P = id => (id && lib.playerOL?.[id]) || null;
+        return Z.olPseudo = {
+            name: ctx.name,
+            player: P(ctx.player),
+            targets: ctx.targets.map(P).filter(Boolean),
+            highlight: ctx.highlight,
+            judgestr: ctx.judgestr,
+            card: ctx.card,
+            cards: ctx.cardIds.map(cardid => ({ cardid })),
+            _olCtx: ctx,
+            getParent: () => null,
+        };
+    };
+    // 房主：闭眼庄周在客机上时，把他的梦闻和意象要用的用牌、打出、指定、伤害发过去。
+    Z.olFeedNames = ["useCard1", "useCardAfter", "useCardToTarget", "respondBefore", "damageEnd"];
+    Z.olUseSnap = use => use ? {
+        id: Z.olEventId(use),
+        player: Z.olPid(use.player),
+        targets: (Array.isArray(use.targets) ? use.targets : []).map(Z.olPid).filter(Boolean),
+        card: Z.olCardInfo(use.card, use.player),
+    } : null;
+    Z.olFeedHost = (name, trigger) => {
+        if (name === "dieAfter" || name === "changeSkillsAfter") {
+            try {
+                Z.olPushRefresh(trigger);
+            } catch (e) {
+                console.warn("[庄周] 联机刷新发送失败", e);
+            }
+            return;
+        }
+        if (!Z.olFeedNames.includes(name)) return;
+        try {
+            Z.olFeedSend(name, trigger);
+        } catch (e) {
+            console.warn("[庄周] 联机梦闻发送失败", e);
+        }
+    };
+    Z.olFeedSend = (name, trigger) => {
+        const viewers = Z.olViewers();
+        if (!viewers.length) return;
+        let snap;
+        if (name === "useCard1" || name === "useCardAfter") snap = Z.olUseSnap(trigger);
+        else if (name === "useCardToTarget") {
+            snap = {
+                use: Z.olUseSnap(Z.v239GetUseEvent(trigger)),
+                player: Z.olPid(trigger.player),
+                target: Z.olPid(trigger.target),
+                card: Z.olCardInfo(trigger.card, trigger.player),
+            };
+        } else if (name === "respondBefore") {
+            snap = {
+                player: Z.olPid(trigger.player),
+                highlight: !!trigger.highlight,
+                card: Z.olCardInfo(trigger.card, trigger.player),
+            };
+        } else {
+            snap = {
+                id: Z.olEventId(trigger),
+                player: Z.olPid(trigger.player),
+                num: trigger.num || 0,
+                fire: Z.v226IsFireDamage(trigger),
+                nature: Z.nature(trigger.nature),
+                use: Z.olUseSnap(Z.v239GetUseEvent(trigger)),
+            };
+        }
+        for (const player of viewers) {
+            player.send((kind, snap) => lib.xd_utils?.zhuangzhou?.olFeed?.(kind, snap), name, snap);
+        }
+    };
+    // 庄周本人的电脑：照房主发来的事件，跑和单机相同的梦闻、意象处理。
+    Z.olUses = new Map();
+    Z.olDamages = new Map();
+    Z.olFeed = (kind, snap) => {
+        if (!Z.olClient() || !snap || Z.ended || !game.me || !Z.local(game.me) || !Z.blind(game.me)) return;
+        const P = id => (id && lib.playerOL?.[id]) || null;
+        const keep = (map, id, make) => {
+            let item = map.get(id);
+            if (!item) {
+                map.set(id, item = make());
+                if (map.size > 300) map.delete(map.keys().next().value);
+            }
+            return item;
+        };
+        const use = info => {
+            if (!info) return null;
+            const event = keep(Z.olUses, info.id, () => ({ name: "useCard", getParent: () => null }));
+            event.player = P(info.player);
+            event.targets = (info.targets || []).map(P).filter(Boolean);
+            event.card = info.card;
+            return event;
+        };
+        try {
+            if (kind === "useCard1") {
+                const event = use(snap);
+                if (Z.v226DreamReportActive) Z.v226RecordUseCard(event);
+                if (Z.v215ImageryActive) Z.v239BeginUse(event);
+            } else if (kind === "useCardAfter") {
+                if (Z.v215ImageryActive) Z.v239FinalizeUse(use(snap));
+            } else if (kind === "respondBefore") {
+                if (Z.v226DreamReportActive) Z.v309RecordRespond({
+                    name: "respond", player: P(snap.player), highlight: snap.highlight, card: snap.card,
+                });
+            } else if (kind === "useCardToTarget") {
+                if (!Z.v215ImageryActive) return;
+                const useEvent = use(snap.use);
+                const source = P(snap.player);
+                const target = P(snap.target) || source;
+                Z.v239RegisterTarget(useEvent, source, P(snap.target));
+                if (target && target !== game.me) {
+                    Z.v226RecordTransformation(target, Z.v220OnTargeted(source, target, snap.card));
+                    if (source === game.me) Z.v241OnZhuangzhouUseOnOthers?.();
+                }
+            } else if (kind === "damageEnd") {
+                const damage = keep(Z.olDamages, snap.id, () => ({ name: "damage" }));
+                damage.player = P(snap.player);
+                damage.num = snap.num;
+                damage.nature = snap.nature;
+                damage.hasNature = nature => nature === "fire" ? !!snap.fire : String(snap.nature || "").split("|").includes(nature);
+                const useEvent = use(snap.use);
+                damage.getParent = () => useEvent;
+                Z.v239RegisterDamage(damage);
+                Z.v230HandleDamageEnd(damage);
+            }
+        } catch (e) {
+            console.warn("[庄周] 联机梦闻处理失败", e);
+        }
+    };
+
     const skills = {
         xd_mei: {
             zhuanhuanji: true,
@@ -7100,7 +7662,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             sourceSkill: "xd_xing",
             enable: "chooseToUse",
             filter(event, player) {
-                if (_status.connectMode || !Z.allowed(player, "awake")) return false;
+                if (!Z.allowed(player, "awake")) return false;
                 if (Z.state(player).closed <= 0) return false;
                 return !Z.hasAwakeMaterial(player);
             },
@@ -7157,6 +7719,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
                     z.refresh();
                     return;
                 }
+                if (z.olHost()) z.olFeedHost(name, trigger);
                 // V2.7.3 测试脚手架：正式技能本身并非“出牌阶段自动闭眼”。
                 // 这里只为了让实机回归可以稳定进入 BlindBroker / 原生牌背遮罩环境。
                 // 等闭眼出牌核心验证完毕后必须删除这段自动闭眼逻辑，恢复真实【寐】状态机。
@@ -7304,7 +7867,7 @@ function installXdZhuangzhou(lib, game, ui, get, ai, _status) {
             enable: "chooseToUse", position: "h", selectCard: 1,
             discard: false, lose: false, delay: false, log: false,
             filter(event, player) {
-                if (_status.connectMode || !Z.allowed(player, mode)) return false;
+                if (!Z.allowed(player, mode)) return false;
                 if (mode === "awake") {
                     // 有牌分支：点击【醒】后先睁眼，随后必须选 1 张原先暗置的手牌；
                     // pending frame 用于睁眼后维持同一次【醒】的原生选牌流程。
@@ -24606,6 +25169,7 @@ export default function () {
             } catch (error) {}
           }
           try { player.updateMarks(); } catch (error) {}
+          try { lib.xd_utils?.zhuangzhou?.olSynced?.(player, Object.keys(data.set || {})); } catch (error) {}
         }
       };
       // 共享 faction ID；不覆盖先加载扩展设置的名称和颜色。
@@ -25796,9 +26360,8 @@ export default function () {
     },
     package: {
       character: {
-        // 联机：本武将包可在联机选将；庄周暂不开放。
+        // 联机：本武将包可在联机选将。
         connect: true,
-        connectBanned: ["xd_zhuangzhou"],
         character: {
           ...Object.fromEntries(Object.entries({          xd_hanzhuo: {
             sex: "male",
@@ -40334,8 +40897,22 @@ export default function () {
               }
               if (skill.isFudingUse(trigger)) blocked.fuding = true;
               else for (const card of trigger.cards || []) if (card?.cardid) blocked.ids.add(card.cardid);
+              // 同一个出牌阶段里同一张牌（或扶鼎本身）被拦下两次：这个阶段剩下的时间都不再挑它，
+              // 场上手牌数、体力一直在变（上面的 key 每次都对不上）时也一样。
+              let stuck = player._xd_fuding_stuck;
+              if (!stuck || stuck.phase !== stamp.phase) stuck = player._xd_fuding_stuck = { phase: stamp.phase, count: new Map() };
+              const ids = skill.isFudingUse(trigger) ? ["xd_fuding"] : (trigger.cards || []).map(card => card?.cardid).filter(Boolean);
+              for (const id of ids) stuck.count.set(id, (stuck.count.get(id) || 0) + 1);
             },
             aiBlocked(player, card) {
+              const stuck = player._xd_fuding_stuck;
+              if (stuck?.phase) {
+                const stamp = lib.skill.xd_fuding.aiStamp(player);
+                if (stuck.phase === stamp.phase) {
+                  const ids = card === "xd_fuding" ? ["xd_fuding"] : (get.itemtype(card) === "card" ? [card] : card?.cards || []).map(current => current?.cardid);
+                  if (ids.some(id => id && (stuck.count.get(id) || 0) >= 2)) return true;
+                }
+              }
               const blocked = player._xd_fuding_blocked;
               if (!blocked) return false;
               const stamp = lib.skill.xd_fuding.aiStamp(player);
