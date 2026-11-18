@@ -16,7 +16,7 @@ import { lib, game, ui, get, ai, _status } from "../../noname.js";
 import { installFengyuStartup, createFengyuSplashConfig } from "./assets/startup/index.js";
 export const type = "extension";
 // 构建标记：打包时替换成本次构建的标记。联机开局时房主用它核对各家装的是否同一版本。
-const XD_BUILD_STAMP = "d1a3240ffd37";
+const XD_BUILD_STAMP = "aec0ed38eadb";
 const silentSkill = {
   forced: true,
   silent: true,
@@ -30726,16 +30726,22 @@ export default function () {
                   return lib.skill.xd_lian.isShanMaterial(card, player);
                 },
                 viewAsFilter(player) {
-                  return player.countCards("hs", card => lib.skill.xd_lian.isShanMaterial(card, player)) > 0;
+                  if (!player.countCards("hs", card => lib.skill.xd_lian.isShanMaterial(card, player))) return false;
+                  // 电脑：本体在无懈询问里给这个技能打的分和真无懈一样，不看【涟】的先后（aiOrder），
+                  // 所以“只花多出留底的闪”（aiSpare）写在这一步：没有富余的材料就不印无懈。
+                  return lib.skill.xd_ai_core.humanActing(player) || lib.skill.xd_lian.aiSpare(player);
                 },
                 viewAs: { name: "wuxie", isCard: true },
                 popname: true,
                 prompt: "将一张【闪】当【无懈可击】使用",
                 hiddenCard(player, name) {
-                  return name === "wuxie" && player.countCards("hs", card => lib.skill.xd_lian.isShanMaterial(card, player)) > 0;
+                  if (name !== "wuxie" || !player.countCards("hs", card => lib.skill.xd_lian.isShanMaterial(card, player))) return false;
+                  return lib.skill.xd_ai_core.humanActing(player) || lib.skill.xd_lian.aiSpare(player);
                 },
                 check(card) {
-                  return 8 - get.value(card);
+                  // 同【涟】：先花【溯】映照出来的非印刷【闪】，同类里花最不值钱的。
+                  const player = get.player();
+                  return 20 - get.value(card, player) - (lib.skill.xd_su.rawName(card) === "shan" ? 6 : 0);
                 },
                 onuse(result, player) {
                   if (!result?.card) return;
@@ -30771,6 +30777,8 @@ export default function () {
                       // 联机：ai 会随选择送到客户端重建，读事件上的选项（与 controls 相同）
                       .set("ai", () => {
                         const controls = get.event().controls;
+                        // 回合外【溯】本来就不生效，让它失效几乎不花钱；【涟】留着，濒死时还能把【闪】印成【桃】。
+                        if (_status.currentPhase !== get.player() && controls.includes("溯")) return "溯";
                         return controls.includes("涟") ? "涟" : controls[0];
                       })
                       .forResult();
@@ -41671,6 +41679,19 @@ export default function () {
                                       return typeof order === 'number' && order > 0 ? order + 0.1 : order;
                                   },
                               },
+                              // 电脑：本体在无懈询问里给技能和真牌打一样的分，同分先挑手里的真牌；
+                              // 这一轮还能用的【行将•无懈】先用，手里的真【无懈可击】留着。
+                              ...(name === 'wuxie' ? {
+                                  mod: {
+                                      cardEnabled(card, player) {
+                                          if (get.itemtype(card) !== 'card' || get.name(card, player) !== 'wuxie') return;
+                                          const event = _status.event;
+                                          if (!event || event.name !== 'chooseToUse' || event.type !== 'wuxie' || event.player !== player) return;
+                                          if (lib.skill.xd_ai_core.humanActing(player)) return;
+                                          if (lib.filter.filterEnable(event, player, skill)) return false;
+                                      },
+                                  },
+                              } : {}),
                           };
 
                           game.finishSkill(skill);
