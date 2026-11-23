@@ -113,7 +113,7 @@ export function installFengyuStartup(lib, game, ui) {
     #splash.xd-fy-active[data-fy-mode-size="original"]{--fy-mode-width:100px;--fy-mode-height:300px;--fy-mode-font:50px;--fy-mode-gap:10px;}
     #splash.xd-fy-active>div[link]{width:var(--fy-mode-width);height:var(--fy-h);vertical-align:top;margin:0 var(--fy-mode-gap);
       top:calc(var(--fy-top) + var(--fy-h)*var(--fy-hang,0));
-      --fy-swing:calc((var(--fy-top) + var(--fy-h)*(var(--fy-hang,0) + .5))*var(--fy-sway,.8)*.01745);
+      transform-origin:50% calc((var(--fy-top) + var(--fy-h)*var(--fy-hang,0))*-1);
       border:0!important;border-radius:calc(var(--fy-mode-width)*.18) calc(var(--fy-mode-width)*.18) 5px 5px!important;
       background:radial-gradient(circle at 50% calc(var(--fy-frame-top)*.5),#120b06 0 2.4px,#ffe2b452 3px 3.8px,transparent 4.4px),${WOOD} center/cover,#5d3f25!important;
       box-shadow:inset 0 1px 0 #ffe6be38,inset 0 0 0 1px #1e1208aa,inset 0 -12px 16px #0006,0 16px 22px -8px #000b,0 2px 4px #0006!important;
@@ -142,7 +142,14 @@ export function installFengyuStartup(lib, game, ui) {
     #splash.xd-fy-active>div[link].glow{box-shadow:inset 0 1px 0 #ffe6be38,inset 0 0 0 1px #1e1208aa,0 0 18px #ffbe6e88,0 16px 22px -8px #000b!important;}
     #splash.xd-fy-active>div[link].hidden{transform:translateY(calc((var(--fy-top) + var(--fy-h)*1.3)*-1));}
     #splash.xd-fy-active[data-fy-still]>div[link],#splash.xd-fy-active[data-fy-still]>div[link]:after{animation:none;}
-    @keyframes xd-fy-sway{from{rotate:calc(var(--fy-sway,.8)*-1deg);translate:calc(var(--fy-swing)*-1) 0;}to{rotate:calc(var(--fy-sway,.8)*1deg);translate:var(--fy-swing) 0;}}
+    @keyframes xd-fy-sway-0{from{rotate:-0.55deg;}to{rotate:0.55deg;}}
+    @keyframes xd-fy-sway-1{from{rotate:-0.62deg;}to{rotate:0.62deg;}}
+    @keyframes xd-fy-sway-2{from{rotate:-0.69deg;}to{rotate:0.69deg;}}
+    @keyframes xd-fy-sway-3{from{rotate:-0.76deg;}to{rotate:0.76deg;}}
+    @keyframes xd-fy-sway-4{from{rotate:-0.83deg;}to{rotate:0.83deg;}}
+    @keyframes xd-fy-sway-5{from{rotate:-0.90deg;}to{rotate:0.90deg;}}
+    @keyframes xd-fy-sway-6{from{rotate:-0.97deg;}to{rotate:0.97deg;}}
+    @media(prefers-reduced-motion:no-preference){#splash.xd-fy-active:not([data-fy-still])>div[link][data-fy-sk="0"]{animation-name:xd-fy-sway-0;}#splash.xd-fy-active:not([data-fy-still])>div[link][data-fy-sk="1"]{animation-name:xd-fy-sway-1;}#splash.xd-fy-active:not([data-fy-still])>div[link][data-fy-sk="2"]{animation-name:xd-fy-sway-2;}#splash.xd-fy-active:not([data-fy-still])>div[link][data-fy-sk="3"]{animation-name:xd-fy-sway-3;}#splash.xd-fy-active:not([data-fy-still])>div[link][data-fy-sk="4"]{animation-name:xd-fy-sway-4;}#splash.xd-fy-active:not([data-fy-still])>div[link][data-fy-sk="5"]{animation-name:xd-fy-sway-5;}#splash.xd-fy-active:not([data-fy-still])>div[link][data-fy-sk="6"]{animation-name:xd-fy-sway-6;}}
     @keyframes xd-fy-drip{0%{opacity:0;transform:scale(.2);}78%{opacity:.85;transform:scale(1);}84%{opacity:.9;transform:translateY(1px) scale(.85,1.25);}
       91%{opacity:0;transform:translateY(32vh) scale(.6,2.2);}100%{opacity:0;transform:translateY(32vh);}}
     @media(prefers-reduced-motion:reduce){#splash.xd-fy-active>div[link],#splash.xd-fy-active>div[link]:after{animation:none;}}
@@ -312,7 +319,7 @@ export function installFengyuStartup(lib, game, ui) {
     signs.forEach((sign, i) => {
       const s = sign.style;
       s.setProperty('--fy-hang', String(HANG[i % HANG.length]));
-      s.setProperty('--fy-sway', (0.55 + ((i * 37) % 7) * 0.07).toFixed(2));
+      sign.dataset.fySk = String((i * 37) % 7); // swing amplitude 0.55..0.97 deg, one keyframe set each
       const swing = 5.4 + ((i * 53) % 9) * 0.27;
       s.setProperty('--fy-sway-time', swing.toFixed(2) + 's');
       s.setProperty('--fy-sway-delay', (-((i * 1.9) % swing)).toFixed(2) + 's');
@@ -438,7 +445,8 @@ export function installFengyuStartup(lib, game, ui) {
     const ambient = globalThis.createFengyuAmbientAudio({
       onError(error) { console.warn('风雨环境声暂不可用', error); },
     });
-    ambient.setEnabled(true);
+    // Opening the sound device costs ~0.3 s on the main thread: do it right after the first frame is on screen.
+    requestAnimationFrame(() => setTimeout(() => { if (!closed) ambient.setEnabled(true); }, 0));
     function gesture() { if (!closed) ambient.resumeWithGesture(); }
     document.addEventListener('pointerdown', gesture);
     document.addEventListener('keydown', gesture);

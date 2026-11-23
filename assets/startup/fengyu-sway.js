@@ -86,7 +86,126 @@ function readThroughGame(readFile, path) {
   });
 }
 
+// ---- Off the page's main thread -------------------------------------------------------------
+// Creating a WebGL context waits for the graphics card (about 0.7 s on a laptop while the start page
+// is being painted). In a worker that wait no longer freezes the page; the canvas shows once it has a frame.
+const WORKER_SOURCE = `
+let gl = null, uTime = null, uGain = null, stopped = false, time = 4, shown = 0, last = 0, counted = 0, slow = 0, frame = 0;
+const raf = self.requestAnimationFrame ? self.requestAnimationFrame.bind(self) : f => setTimeout(() => f(performance.now()), 16);
+const caf = self.cancelAnimationFrame ? self.cancelAnimationFrame.bind(self) : clearTimeout;
+function render() {
+  const ease = Math.min(1, shown / 3);
+  gl.uniform1f(uTime, time); gl.uniform1f(uGain, ease * ease * (3 - 2 * ease));
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+function draw(now) {
+  if (stopped) return;
+  frame = raf(draw);
+  const raw = last ? Math.max(0, (now - last) / 1000) : 0; last = now;
+  const dt = Math.min(0.1, raw);
+  time = (time + dt) % 3600; shown += dt;
+  if (shown > 2 && raw > 0) {
+    counted++; if (raw > 0.05) slow++;
+    if (counted >= 120) { if (slow > 60) { stopped = true; postMessage({ type: 'slow' }); return; } counted = slow = 0; }
+  }
+  render();
+}
+onmessage = ({ data }) => {
+  if (data.type === 'stop') { stopped = true; caf(frame); gl?.getExtension('WEBGL_lose_context')?.loseContext(); return; }
+  if (data.type === 'size') { if (!gl) return; gl.canvas.width = data.w; gl.canvas.height = data.h; gl.viewport(0, 0, data.w, data.h); render(); return; }
+  if (data.type !== 'start') return;
+  try {
+    const { canvas, picture, map, W, H, w, h, VERTEX, FRAGMENT } = data;
+    gl = canvas.getContext('webgl', { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false, powerPreference: 'low-power' });
+    if (!gl) throw new Error('no webgl');
+    const shader = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) || 'shader'); return s; };
+    const program = gl.createProgram();
+    gl.attachShader(program, shader(gl.VERTEX_SHADER, VERTEX)); gl.attachShader(program, shader(gl.FRAGMENT_SHADER, FRAGMENT));
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || 'link');
+    gl.useProgram(program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(program, 'aPos');
+    gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+    uTime = gl.getUniformLocation(program, 'uTime'); uGain = gl.getUniformLocation(program, 'uGain');
+    gl.uniform2f(gl.getUniformLocation(program, 'uSize'), W, H);
+    gl.uniform1i(gl.getUniformLocation(program, 'uImg'), 0); gl.uniform1i(gl.getUniformLocation(program, 'uMap'), 1);
+    const texture = (unit, source) => {
+      gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+      for (const [k, v] of [[gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
+    };
+    texture(1, map); texture(0, picture); picture.close?.(); map.close?.();
+    canvas.width = w; canvas.height = h; gl.viewport(0, 0, w, h);
+    render();
+    postMessage({ type: 'ready' });
+    frame = raf(draw);
+  } catch (error) { stopped = true; postMessage({ type: 'error', message: String(error && error.message || error) }); }
+};`;
+
+let noWorker = false;
+function startInWorker({ layer, poster, readFile, path, size }) {
+  const [W, H] = size;
+  const canvas = document.createElement('canvas');
+  canvas.className = 'xd-fy-sway';
+  canvas.style.visibility = 'hidden';
+  let worker = null, stopped = false, offscreen = null, ready = false, inner = null;
+  // if the worker cannot run here, fall back to drawing on the page as before
+  function fallback(reason) {
+    console.warn('风雨植物摆动改在页面上画', reason);
+    api.stop(); noWorker = true;
+    try { inner = startFengyuSway({ layer, poster, readFile, path, size }); } catch (error) { console.warn('风雨植物摆动未加载', error); }
+  }
+  const url = URL.createObjectURL(new Blob([WORKER_SOURCE], { type: 'text/javascript' }));
+  function box() {
+    const w = layer.clientWidth || innerWidth, h = layer.clientHeight || innerHeight;
+    const contain = getComputedStyle(poster).objectFit === 'contain';
+    const scale = (contain ? Math.min : Math.max)(w / W, h / H);
+    Object.assign(canvas.style, { left: `${(w - W * scale) / 2}px`, top: `${(h - H * scale) / 2}px`, width: `${W * scale}px`, height: `${H * scale}px` });
+    const density = Math.max(0.5, Math.min(1, (globalThis.devicePixelRatio || 1) * scale));
+    return { w: Math.round(W * density), h: Math.round(H * density) };
+  }
+  function fit() { if (worker && !stopped) worker.postMessage({ type: 'size', ...box() }); }
+  const api = {
+    stop() {
+      inner?.stop(); inner = null;
+      if (stopped) return; stopped = true;
+      removeEventListener('resize', fit);
+      if (worker) { worker.postMessage({ type: 'stop' }); setTimeout(() => worker.terminate(), 200); }
+      URL.revokeObjectURL(url);
+      canvas.remove();
+    },
+  };
+  // the picture: read through the game when possible (never "foreign" data), decoded off the main thread
+  const picture = (typeof readFile === 'function'
+    ? new Promise((resolve, reject) => readFile(path, data => resolve(createImageBitmap(new Blob([data], { type: 'image/png' }))), reject))
+    : Promise.reject(new Error('no readFile')))
+    .catch(() => whenLoaded(poster).then(img => createImageBitmap(img)));
+  const map = fetch(SWAY_MAP).then(r => r.blob()).then(b => createImageBitmap(b, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' }));
+  Promise.all([picture, map]).then(([pic, mp]) => {
+    if (stopped) { pic.close?.(); mp.close?.(); return; }
+    poster.after(canvas);
+    offscreen = canvas.transferControlToOffscreen();
+    worker = new Worker(url);
+    worker.onmessage = ({ data }) => {
+      if (stopped) return;
+      if (data.type === 'ready') { ready = true; canvas.style.visibility = ''; addEventListener('resize', fit); fit(); }
+      else if (data.type === 'slow') api.stop();
+      else if (data.type === 'error') { if (ready) { console.warn('风雨植物摆动未加载', data.message); api.stop(); } else fallback(data.message); }
+    };
+    worker.onerror = event => { event.preventDefault?.(); if (stopped) return; if (ready) { console.warn('风雨植物摆动未加载', event.message); api.stop(); } else fallback(event.message); };
+    worker.postMessage({ type: 'start', canvas: offscreen, picture: pic, map: mp, W, H, ...box(), VERTEX, FRAGMENT }, [offscreen, pic, mp]);
+  }).catch(error => { console.warn('风雨植物摆动未加载', error); api.stop(); });
+  return api;
+}
+
 export function startFengyuSway({ layer, poster, readFile, path, size }) {
+  if (typeof Worker === 'function' && typeof createImageBitmap === 'function' && typeof OffscreenCanvas === 'function'
+    && HTMLCanvasElement.prototype.transferControlToOffscreen && !noWorker && !globalThis.__fyNoWorker) {
+    return startInWorker({ layer, poster, readFile, path, size });
+  }
   const [W, H] = size;
   const canvas = document.createElement('canvas');
   canvas.className = 'xd-fy-sway';
