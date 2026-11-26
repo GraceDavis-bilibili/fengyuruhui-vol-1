@@ -13,10 +13,9 @@
  */
 
 import { lib, game, ui, get, ai, _status } from "../../noname.js";
-import { installFengyuStartup, createFengyuSplashConfig } from "./assets/startup/index.js";
 export const type = "extension";
 // 构建标记：打包时替换成本次构建的标记。联机开局时房主用它核对各家装的是否同一版本。
-const XD_BUILD_STAMP = "a93e61d7c04b";
+const XD_BUILD_STAMP = "0cba9a980f21";
 const silentSkill = {
   forced: true,
   silent: true,
@@ -38254,7 +38253,6 @@ function createXdLegacyPack() {
 export default function () {
   const pengyue = createXdPengyue();
   const legacy = createXdLegacyPack();
-  let fengyuStartup;
   return {
     name: "风雨如晦（上）",
     arenaReady: function () {
@@ -38268,8 +38266,11 @@ export default function () {
       legacy.normalizePackSource();
     },
     precontent: function () {
-      try { fengyuStartup = installFengyuStartup(lib, game, ui); }
-      catch (error) { console.warn("风雨如晦启动页初始化失败", error); }
+      // 启动页样式若停在本扩展已移除的样式上，改回引擎自带的样式。
+      if (lib.config.splash_style === "xd_fengyu_splash") {
+        const previous = lib.config["extension_风雨如晦（上）_fengyu_splash_previous"];
+        game.saveConfig("splash_style", ["style1", "style2"].includes(previous) ? previous : "style1");
+      }
       // 联机：各家按自己装的扩展判断选择，全房须装同一版本。开局时房主把构建标记发给各客机，
       // 客机不同就提示，并回报自己的标记，房主在战报里点名。单机不触发。
       lib.xd_build_stamp = XD_BUILD_STAMP;
@@ -39681,8 +39682,7 @@ export default function () {
 
       pengyue.P.install();
     },
-    config: createFengyuSplashConfig(lib, game, ui),
-    onremove: function () { fengyuStartup?.uninstall(); },
+    config: {},
     help: {
       "风雨如晦（上）": "<b>风雨如晦（上）·玄蝶</b><br>" + "<br>" + "作者／主创：玄蝶<br>" + "开发：ChatGPT、Claude<br>" + "壁纸与界面美术：ChatGPT、Claude<br>" + "测试、打磨、AI出牌策略：Grace_Davis<br>" + "代码贡献：清风（李牧、周公）、蝶设堂（桓温）、无名杀团队<br>" + "<br>" + "代码按其适用的开源许可使用；壁纸与界面美术不随代码授权，转载或二改请注明出处。<br>" + "部分素材来自网络，版权归原作者所有，如有侵权请联系删除。"
     },
@@ -49542,9 +49542,44 @@ export default function () {
               }
               return ctx._xd_yangkuang_heal;
             },
-            // 雌黄骗闪印桃那一下定好的牌（xd_cihuang.luckPlan，只在那一下的结算里有）：他每摸一张之前，把下一张还在牌堆里的放到牌堆顶。
+            // 王衍的彩蛋：他自己的回合里回满血时手里正好没牌（怎么回满的都算：雌黄印桃、桃、桃园、三窟，或减体力上限后不再受伤），
+            // 阳狂第一次摸的那张又触发一次阳狂，连着两次、自摸四张。他的敌对阵营里没有玩家（xd_ai_core.humanSeats，按真实阵营 sameSide）时，
+            // 每次有七成五把这四张换成牌堆里的：诸葛连弩；杀（火杀，没有时依次雷杀、冰杀、红杀、黑杀）；铁索连环（只在给的是属性杀时）；
+            // 酒（没有时顺手牵羊，再没有时过河拆桥）。各取牌堆里最上面的一张；没有诸葛连弩、或杀、或酒顺拆一张都没有时这次不换；
+            // 不给铁索时第四张照常摸。在第一次阳狂开始时定好（存在 _status._xd_yangkuang_luck，这次摸完清掉），摸牌前由 luckTop 放到牌堆顶。
+            luckPlan(player, trigger) {
+              try {
+                if (trigger?.name !== "recover" && trigger?.name !== "loseMaxHp") return null;
+                if (_status.currentPhase !== player || player.countCards("h") > 0 || !player.isHealthy()) return null;
+                const core = lib.skill.xd_ai_core;
+                if (core.humanSeats().some(human => human !== player && !core.sameSide(player, human))) return null;
+                const pile = Array.from(ui.cardPile.childNodes), out = [];
+                const pick = (...tests) => {
+                  for (const test of tests) {
+                    const card = pile.find(item => !out.includes(item) && test(item));
+                    if (card) {
+                      out.push(card);
+                      return card;
+                    }
+                  }
+                  return null;
+                };
+                const sha = nature => card => card.name === "sha" && get.natureList(card, false).includes(nature);
+                const plain = color => card => card.name === "sha" && get.color(card, false) === color;
+                if (!pick(card => card.name === "zhuge")) return null;
+                const kill = pick(sha("fire"), sha("thunder"), sha("ice"), plain("red"), plain("black"));
+                if (!kill) return null;
+                if (["fire", "thunder", "ice"].some(nature => get.natureList(kill, false).includes(nature))) pick(card => card.name === "tiesuo");
+                if (!pick(card => card.name === "jiu", card => card.name === "shunshou", card => card.name === "guohe")) return null;
+                if (Math.random() >= 0.75) return null;
+                return { owner: player, cards: out };
+              } catch (e) {
+                return null;
+              }
+            },
+            // 彩蛋定好的牌（luckPlan）：他每摸一张之前，把下一张还在牌堆里的放到牌堆顶。
             luckTop(player) {
-              const luck = _status._xd_cihuang_luck;
+              const luck = _status._xd_yangkuang_luck;
               if (!luck || luck.owner !== player || !Array.isArray(luck.cards)) return;
               while (luck.cards.length) {
                 const card = luck.cards.shift();
@@ -49621,11 +49656,18 @@ export default function () {
               player.logSkill("xd_yangkuang", same ? undefined : current);
               // “你”与“当前回合角色”分别执行；两者为同一人时也保留为两个独立事件。
               // 次序：当前回合角色摸一张、你摸一张、当前回合角色视为使用【酒】、你视为使用【酒】。
-              if (same) lib.skill.xd_yangkuang.luckTop(player);
-              await current.draw();
-              if (player.isIn()) {
-                lib.skill.xd_yangkuang.luckTop(player);
-                await player.draw();
+              // 彩蛋（luckPlan）：第一次阳狂开始时定牌，第二次阳狂在第一张摸牌里接着用，这次两张摸完清掉。
+              const luck = same ? lib.skill.xd_yangkuang.luckPlan(player, trigger) : null;
+              if (luck) _status._xd_yangkuang_luck = luck;
+              try {
+                if (same) lib.skill.xd_yangkuang.luckTop(player);
+                await current.draw();
+                if (player.isIn()) {
+                  lib.skill.xd_yangkuang.luckTop(player);
+                  await player.draw();
+                }
+              } finally {
+                if (luck && _status._xd_yangkuang_luck === luck) delete _status._xd_yangkuang_luck;
               }
 
               const drink = async target => {
@@ -49740,37 +49782,6 @@ export default function () {
                 });
               });
             },
-            // 自己回合里他的杀被目标闪掉、那人再也出不了闪（hasShan），他对自己印桃、交掉的是最后一张手牌（回满又空着手，阳狂连着两次摸四张）：
-            // 敌对阵营里没有玩家（xd_ai_core.humanSeats，按真实阵营 sameSide）时，六成把这四张换成牌堆里的诸葛连弩、火杀（没有时雷杀）、
-            // 铁索连环、酒（没有时顺手牵羊），各取最上面的一张；凑不齐不换。阳狂每摸一张之前放一张到牌堆顶（xd_yangkuang.luckTop）。
-            luckPlan(player, trigger, vcard, cards) {
-              try {
-                if (vcard?.name !== "tao" || _status.currentPhase !== player || !player.hasSkill("xd_yangkuang")) return null;
-                if (trigger?.name !== "sha" || trigger.player !== player || !Array.isArray(cards)) return null;
-                const used = trigger.responded?.card;
-                if (used && get.name(used) !== "shan") return null;
-                const target = trigger.target;
-                if (!target?.isIn?.() || target === player || target.hasShan("use")) return null;
-                if (player.maxHp - player.hp !== 1 || player.getCards("h").some(card => !cards.includes(card))) return null;
-                const core = lib.skill.xd_ai_core;
-                if (core.humanSeats().some(human => human !== player && !core.sameSide(player, human))) return null;
-                const pile = Array.from(ui.cardPile.childNodes), out = [];
-                const pick = (...tests) => {
-                  for (const test of tests) {
-                    const card = pile.find(item => !out.includes(item) && test(item));
-                    if (card) return out.push(card);
-                  }
-                  return 0;
-                };
-                const sha = nature => card => card.name === "sha" && get.natureList(card, false).includes(nature);
-                if (!pick(card => card.name === "zhuge") || !pick(sha("fire"), sha("thunder")) || !pick(card => card.name === "tiesuo") ||
-                  !pick(card => card.name === "jiu", card => card.name === "shunshou")) return null;
-                if (Math.random() >= 0.6) return null;
-                return { owner: player, cards: out };
-              } catch (e) {
-                return null;
-              }
-            },
             filter(event, player) {
               if (event.type !== "card") return false;
               const user = event.player;
@@ -49870,13 +49881,7 @@ export default function () {
               if (!material?.bool || !material.cards?.length || !target.isIn()) return;
 
               player.logSkill("xd_cihuang", target);
-              const luck = skill.luckPlan(player, trigger, vcard, material.cards);
-              if (luck) _status._xd_cihuang_luck = luck;
-              try {
-                await player.useCard(get.autoViewAs(vcard, material.cards), material.cards, false, target, "xd_cihuang");
-              } finally {
-                if (luck && _status._xd_cihuang_luck === luck) delete _status._xd_cihuang_luck;
-              }
+              await player.useCard(get.autoViewAs(vcard, material.cards), material.cards, false, target, "xd_cihuang");
             }
           },
           xd_sanku: {
